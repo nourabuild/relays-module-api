@@ -20,7 +20,7 @@ API_IMAGE       := $(BASE_IMAGE_NAME)/$(SERVICE_APP):$(VERSION)
 # Main
 
 run:
-	lsof -i :8080 | awk 'NR!=1 {print $$2}' | xargs -r kill -9
+	lsof -i :10267 | awk 'NR!=1 {print $$2}' | xargs -r kill -9
 	go run ./cmd/api/main.go
 
 # ==============================================================================

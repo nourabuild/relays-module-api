@@ -66,7 +66,7 @@ func run(logger *slog.Logger) error {
 
 	// 10. Modern Server with configured timeouts
 	srv := &http.Server{
-		Addr:         ":" + getEnv("PORT", "8080"),
+		Addr:         ":" + getEnv("PORT", "10267"),
 		Handler:      iamApp.RegisterRoutes(),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  5 * time.Second,
