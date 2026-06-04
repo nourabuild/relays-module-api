@@ -23,7 +23,6 @@ func TestRegisterRoutesSplitsTaskResources(t *testing.T) {
 		http.MethodPost + " /api/v1/templates/:template_id/attachments",
 		http.MethodGet + " /api/v1/templates/:template_id/attachments",
 		http.MethodPost + " /api/v1/batches",
-		http.MethodGet + " /api/v1/batches/me/progress",
 		http.MethodGet + " /api/v1/batches/:batch_id",
 		http.MethodGet + " /api/v1/batches/:batch_id/progress",
 		http.MethodGet + " /api/v1/batches/:batch_id/instances",

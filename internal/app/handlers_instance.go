@@ -109,14 +109,27 @@ func (a *App) HandleUpdateTaskInstanceStatus(c *gin.Context) {
 
 	isAdmin := currentUserIsAdmin(c)
 	canManage := canManageTaskInstance(instance, userID, isAdmin)
-	if !canManage {
-		if instance.AssigneeID != userID || input.Status == models.TaskStatusCancelled {
+	isAssignee := instance.AssigneeID == userID
+
+	switch input.Status {
+	case models.TaskStatusInProgress, models.TaskStatusCompleted:
+		if !isAssignee {
+			writeError(c, http.StatusForbidden, "forbidden", nil)
+			return
+		}
+	case models.TaskStatusCancelled:
+		if !canManage {
+			writeError(c, http.StatusForbidden, "forbidden", nil)
+			return
+		}
+	default:
+		if !canManage && !isAssignee {
 			writeError(c, http.StatusForbidden, "forbidden", nil)
 			return
 		}
 	}
 
-	if input.Status == models.TaskStatusCompleted && instance.ReviewRequired && !canManage {
+	if input.Status == models.TaskStatusCompleted && instance.ReviewRequired {
 		updated, err := a.db.SubmitTaskForReview(c.Request.Context(), instance.ID, userID, models.SubmitTaskReview{
 			Note: input.CompletionNote,
 		})

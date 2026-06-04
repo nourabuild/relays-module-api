@@ -51,7 +51,6 @@ func (a *App) RegisterRoutes() *gin.Engine {
 		batches.Use(middleware.Authenticate(a.jwt))
 		{
 			batches.POST("", a.HandleCreateTaskBatch)
-			batches.GET("/me/progress", a.HandleListMyTaskBatchProgress)
 			batches.GET("/:batch_id", a.HandleGetTaskBatch)
 			batches.GET("/:batch_id/progress", a.HandleGetTaskBatchProgress)
 			batches.GET("/:batch_id/instances", a.HandleListTaskBatchInstances)
