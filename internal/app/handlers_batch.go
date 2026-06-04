@@ -45,6 +45,22 @@ func (a *App) HandleGetTaskBatch(c *gin.Context) {
 	c.JSON(http.StatusOK, batch)
 }
 
+func (a *App) HandleListMyTaskBatchProgress(c *gin.Context) {
+	userID, err := middleware.GetClaims(c)
+	if err != nil {
+		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+
+	progresses, err := a.db.ListTaskBatchProgressByCreator(c.Request.Context(), userID, true)
+	if err != nil {
+		a.writeTaskDBError(c, "list_my_task_batch_progress", err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"batches": progresses})
+}
+
 func (a *App) HandleGetTaskBatchProgress(c *gin.Context) {
 	userID, err := middleware.GetClaims(c)
 	if err != nil {

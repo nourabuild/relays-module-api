@@ -80,11 +80,12 @@ type Service interface {
 	CreateTaskBatch(ctx context.Context, creatorID string, input models.CreateTaskBatch) (models.TaskBatchCreateResult, error)
 	GetTaskBatch(ctx context.Context, batchID string) (models.TaskBatch, error)
 	GetTaskBatchProgress(ctx context.Context, batchID string, includeInstances bool) (models.TaskBatchProgress, error)
+	ListTaskBatchProgressByCreator(ctx context.Context, creatorID string, includeInstances bool) ([]models.TaskBatchProgress, error)
 	ListTaskBatchInstances(ctx context.Context, batchID string) ([]models.TaskInstance, error)
 
 	// Task instance operations
 	GetTaskInstance(ctx context.Context, taskInstanceID string) (models.TaskInstance, error)
-	ListTaskInstancesByAssignee(ctx context.Context, assigneeID string, filter models.TaskInstanceFilter) ([]models.TaskInstance, error)
+	ListTaskInstancesForUser(ctx context.Context, userID string, filter models.TaskInstanceFilter) ([]models.TaskInstance, error)
 	UpdateTaskInstance(ctx context.Context, taskInstanceID, actorID string, input models.UpdateTaskInstance) (models.TaskInstance, error)
 	UpdateTaskInstanceStatus(ctx context.Context, taskInstanceID, actorID string, input models.UpdateTaskInstanceStatus) (models.TaskInstance, error)
 	SubmitTaskForReview(ctx context.Context, taskInstanceID, submittedBy string, input models.SubmitTaskReview) (models.TaskInstance, error)

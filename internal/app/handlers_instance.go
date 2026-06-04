@@ -26,7 +26,7 @@ func (a *App) HandleListMyTaskInstances(c *gin.Context) {
 		return
 	}
 
-	instances, err := a.db.ListTaskInstancesByAssignee(c.Request.Context(), userID, filter)
+	instances, err := a.db.ListTaskInstancesForUser(c.Request.Context(), userID, filter)
 	if err != nil {
 		a.writeTaskDBError(c, "list_my_task_instances", err)
 		return

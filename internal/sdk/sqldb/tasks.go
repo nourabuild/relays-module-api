@@ -232,7 +232,46 @@ func (s *service) GetTaskBatchProgress(ctx context.Context, batchID string, incl
 		return models.TaskBatchProgress{}, err
 	}
 
-	instances, err := listTaskBatchInstances(ctx, s.db, batchID)
+	return buildTaskBatchProgress(ctx, s.db, batch, includeInstances)
+}
+
+func (s *service) ListTaskBatchProgressByCreator(ctx context.Context, creatorID string, includeInstances bool) ([]models.TaskBatchProgress, error) {
+	const query = `
+		SELECT id::text, template_id::text, created_by, title, description,
+		       assignment_mode, idempotency_key, metadata::text, created_at
+		FROM todos.task_batches
+		WHERE created_by = $1
+		ORDER BY created_at DESC
+	`
+
+	rows, err := s.db.QueryContext(ctx, query, creatorID)
+	if err != nil {
+		return nil, fmt.Errorf("listing task batches by creator: %w", err)
+	}
+	defer rows.Close()
+
+	progresses := []models.TaskBatchProgress{}
+	for rows.Next() {
+		batch, err := scanTaskBatch(rows)
+		if err != nil {
+			return nil, err
+		}
+
+		progress, err := buildTaskBatchProgress(ctx, s.db, batch, includeInstances)
+		if err != nil {
+			return nil, err
+		}
+		progresses = append(progresses, progress)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("listing task batches by creator rows: %w", err)
+	}
+
+	return progresses, nil
+}
+
+func buildTaskBatchProgress(ctx context.Context, runner sqlRunner, batch models.TaskBatch, includeInstances bool) (models.TaskBatchProgress, error) {
+	instances, err := listTaskBatchInstances(ctx, runner, batch.ID)
 	if err != nil {
 		return models.TaskBatchProgress{}, err
 	}
@@ -278,9 +317,9 @@ func (s *service) GetTaskInstance(ctx context.Context, taskInstanceID string) (m
 	return getTaskInstance(ctx, s.db, taskInstanceID)
 }
 
-func (s *service) ListTaskInstancesByAssignee(ctx context.Context, assigneeID string, filter models.TaskInstanceFilter) ([]models.TaskInstance, error) {
-	args := []any{assigneeID}
-	conditions := []string{"assignee_id = $1"}
+func (s *service) ListTaskInstancesForUser(ctx context.Context, userID string, filter models.TaskInstanceFilter) ([]models.TaskInstance, error) {
+	args := []any{userID}
+	conditions := []string{"(created_by = $1 OR assignee_id = $1)"}
 
 	if filter.OpenOnly {
 		conditions = append(conditions, "status NOT IN ('completed', 'cancelled')")
@@ -308,7 +347,7 @@ func (s *service) ListTaskInstancesByAssignee(ctx context.Context, assigneeID st
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("listing task instances by assignee: %w", err)
+		return nil, fmt.Errorf("listing task instances for user: %w", err)
 	}
 	defer rows.Close()
 
