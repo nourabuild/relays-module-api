@@ -67,6 +67,37 @@ type Service interface {
 	GetPasswordResetToken(ctx context.Context, token string) (models.PasswordResetToken, error)
 	MarkPasswordResetTokenAsUsed(ctx context.Context, tokenID string) error
 	DeleteExpiredPasswordResetTokens(ctx context.Context) error
+
+	// Task template operations
+	CreateTaskTemplate(ctx context.Context, creatorID string, input models.TaskTemplateInput) (models.TaskTemplate, error)
+	GetTaskTemplate(ctx context.Context, templateID string) (models.TaskTemplate, error)
+	UpdateTaskTemplate(ctx context.Context, templateID string, input models.UpdateTaskTemplate) (models.TaskTemplate, error)
+	ArchiveTaskTemplate(ctx context.Context, templateID string) error
+
+	// Task batch operations
+	CreateTaskBatch(ctx context.Context, creatorID string, input models.CreateTaskBatch) (models.TaskBatchCreateResult, error)
+	GetTaskBatch(ctx context.Context, batchID string) (models.TaskBatch, error)
+	GetTaskBatchProgress(ctx context.Context, batchID string, includeInstances bool) (models.TaskBatchProgress, error)
+	ListTaskBatchInstances(ctx context.Context, batchID string) ([]models.TaskInstance, error)
+
+	// Task instance operations
+	GetTaskInstance(ctx context.Context, taskInstanceID string) (models.TaskInstance, error)
+	ListTaskInstancesByAssignee(ctx context.Context, assigneeID string, filter models.TaskInstanceFilter) ([]models.TaskInstance, error)
+	UpdateTaskInstance(ctx context.Context, taskInstanceID, actorID string, input models.UpdateTaskInstance) (models.TaskInstance, error)
+	UpdateTaskInstanceStatus(ctx context.Context, taskInstanceID, actorID string, input models.UpdateTaskInstanceStatus) (models.TaskInstance, error)
+	ListTaskInstanceEvents(ctx context.Context, taskInstanceID string) ([]models.TaskInstanceEvent, error)
+
+	// Task collaboration operations
+	CreateTaskComment(ctx context.Context, taskInstanceID, authorID string, input models.CreateTaskComment) (models.TaskComment, error)
+	ListTaskComments(ctx context.Context, taskInstanceID string) ([]models.TaskComment, error)
+	CreateTaskBatchComment(ctx context.Context, batchID, authorID string, input models.CreateTaskBatchComment) (models.TaskBatchComment, error)
+	ListTaskBatchComments(ctx context.Context, batchID string) ([]models.TaskBatchComment, error)
+	CreateTaskAttachment(ctx context.Context, scope, targetID, uploadedBy string, input models.CreateTaskAttachment) (models.TaskAttachment, error)
+	ListTaskAttachments(ctx context.Context, scope, targetID string) ([]models.TaskAttachment, error)
+	GetTaskSubmission(ctx context.Context, submissionID string) (models.TaskSubmission, error)
+	CreateTaskSubmission(ctx context.Context, taskInstanceID, submittedBy string, input models.CreateTaskSubmission) (models.TaskSubmission, error)
+	ListTaskSubmissions(ctx context.Context, taskInstanceID string) ([]models.TaskSubmission, error)
+	ReviewTaskSubmission(ctx context.Context, submissionID, reviewerID string, input models.ReviewTaskSubmission) (models.TaskSubmission, error)
 }
 
 type service struct {
