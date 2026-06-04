@@ -3,7 +3,6 @@ package app
 import (
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
 
@@ -13,229 +12,6 @@ import (
 	"github.com/nourabuild/relays-api/internal/sdk/sqldb"
 	"github.com/nourabuild/relays-api/internal/services/sentry"
 )
-
-func (a *App) HandleCreateTaskTemplate(c *gin.Context) {
-	userID, err := middleware.GetClaims(c)
-	if err != nil {
-		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
-		return
-	}
-
-	var input models.TaskTemplateInput
-	if err := c.ShouldBindJSON(&input); err != nil {
-		writeError(c, http.StatusBadRequest, "invalid_json", nil)
-		return
-	}
-	if details := validateTaskTemplateInput(input); len(details) > 0 {
-		writeError(c, http.StatusBadRequest, "invalid_task_template", details)
-		return
-	}
-
-	template, err := a.db.CreateTaskTemplate(c.Request.Context(), userID, input)
-	if err != nil {
-		a.writeTaskDBError(c, "create_task_template", err)
-		return
-	}
-
-	c.JSON(http.StatusCreated, template)
-}
-
-func (a *App) HandleGetTaskTemplate(c *gin.Context) {
-	userID, err := middleware.GetClaims(c)
-	if err != nil {
-		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
-		return
-	}
-
-	template, err := a.db.GetTaskTemplate(c.Request.Context(), c.Param("template_id"))
-	if err != nil {
-		a.writeTaskDBError(c, "get_task_template", err)
-		return
-	}
-	if !canManageTaskTemplate(template, userID, currentUserIsAdmin(c)) {
-		writeError(c, http.StatusForbidden, "forbidden", nil)
-		return
-	}
-
-	c.JSON(http.StatusOK, template)
-}
-
-func (a *App) HandleUpdateTaskTemplate(c *gin.Context) {
-	userID, err := middleware.GetClaims(c)
-	if err != nil {
-		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
-		return
-	}
-
-	template, err := a.db.GetTaskTemplate(c.Request.Context(), c.Param("template_id"))
-	if err != nil {
-		a.writeTaskDBError(c, "get_task_template_for_update", err)
-		return
-	}
-	if !canManageTaskTemplate(template, userID, currentUserIsAdmin(c)) {
-		writeError(c, http.StatusForbidden, "forbidden", nil)
-		return
-	}
-
-	var input models.UpdateTaskTemplate
-	if err := c.ShouldBindJSON(&input); err != nil {
-		writeError(c, http.StatusBadRequest, "invalid_json", nil)
-		return
-	}
-	if input.Title != nil && strings.TrimSpace(*input.Title) == "" {
-		writeError(c, http.StatusBadRequest, "invalid_task_template", map[string]string{"title": "title cannot be empty"})
-		return
-	}
-
-	updated, err := a.db.UpdateTaskTemplate(c.Request.Context(), template.ID, input)
-	if err != nil {
-		a.writeTaskDBError(c, "update_task_template", err)
-		return
-	}
-
-	c.JSON(http.StatusOK, updated)
-}
-
-func (a *App) HandleArchiveTaskTemplate(c *gin.Context) {
-	userID, err := middleware.GetClaims(c)
-	if err != nil {
-		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
-		return
-	}
-
-	template, err := a.db.GetTaskTemplate(c.Request.Context(), c.Param("template_id"))
-	if err != nil {
-		a.writeTaskDBError(c, "get_task_template_for_archive", err)
-		return
-	}
-	if !canManageTaskTemplate(template, userID, currentUserIsAdmin(c)) {
-		writeError(c, http.StatusForbidden, "forbidden", nil)
-		return
-	}
-
-	if err := a.db.ArchiveTaskTemplate(c.Request.Context(), template.ID); err != nil {
-		a.writeTaskDBError(c, "archive_task_template", err)
-		return
-	}
-
-	c.Status(http.StatusNoContent)
-}
-
-func (a *App) HandleCreateTaskBatch(c *gin.Context) {
-	userID, err := middleware.GetClaims(c)
-	if err != nil {
-		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
-		return
-	}
-
-	var input models.CreateTaskBatch
-	if err := c.ShouldBindJSON(&input); err != nil {
-		writeError(c, http.StatusBadRequest, "invalid_json", nil)
-		return
-	}
-	if details := validateCreateTaskBatch(input); len(details) > 0 {
-		writeError(c, http.StatusBadRequest, "invalid_task_batch", details)
-		return
-	}
-
-	result, err := a.db.CreateTaskBatch(c.Request.Context(), userID, input)
-	if err != nil {
-		a.writeTaskDBError(c, "create_task_batch", err)
-		return
-	}
-
-	c.JSON(http.StatusCreated, result)
-}
-
-func (a *App) HandleGetTaskBatch(c *gin.Context) {
-	batch, ok := a.getAuthorizedTaskBatch(c)
-	if !ok {
-		return
-	}
-
-	c.JSON(http.StatusOK, batch)
-}
-
-func (a *App) HandleGetTaskBatchProgress(c *gin.Context) {
-	userID, err := middleware.GetClaims(c)
-	if err != nil {
-		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
-		return
-	}
-
-	progress, err := a.db.GetTaskBatchProgress(c.Request.Context(), c.Param("batch_id"), true)
-	if err != nil {
-		a.writeTaskDBError(c, "get_task_batch_progress", err)
-		return
-	}
-	if !canManageTaskBatch(progress.CreatedBy, userID, currentUserIsAdmin(c)) {
-		writeError(c, http.StatusForbidden, "forbidden", nil)
-		return
-	}
-
-	c.JSON(http.StatusOK, progress)
-}
-
-func (a *App) HandleListTaskBatchInstances(c *gin.Context) {
-	batch, ok := a.getAuthorizedTaskBatch(c)
-	if !ok {
-		return
-	}
-
-	instances, err := a.db.ListTaskBatchInstances(c.Request.Context(), batch.ID)
-	if err != nil {
-		a.writeTaskDBError(c, "list_task_batch_instances", err)
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"instances": instances})
-}
-
-func (a *App) HandleCreateTaskBatchComment(c *gin.Context) {
-	userID, err := middleware.GetClaims(c)
-	if err != nil {
-		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
-		return
-	}
-
-	batch, ok := a.getAuthorizedTaskBatch(c)
-	if !ok {
-		return
-	}
-
-	var input models.CreateTaskBatchComment
-	if err := c.ShouldBindJSON(&input); err != nil {
-		writeError(c, http.StatusBadRequest, "invalid_json", nil)
-		return
-	}
-	if strings.TrimSpace(input.Body) == "" {
-		writeError(c, http.StatusBadRequest, "invalid_task_batch_comment", map[string]string{"body": "body cannot be empty"})
-		return
-	}
-
-	comment, err := a.db.CreateTaskBatchComment(c.Request.Context(), batch.ID, userID, input)
-	if err != nil {
-		a.writeTaskDBError(c, "create_task_batch_comment", err)
-		return
-	}
-
-	c.JSON(http.StatusCreated, comment)
-}
-
-func (a *App) HandleListTaskBatchComments(c *gin.Context) {
-	batch, ok := a.getAuthorizedTaskBatch(c)
-	if !ok {
-		return
-	}
-
-	comments, err := a.db.ListTaskBatchComments(c.Request.Context(), batch.ID)
-	if err != nil {
-		a.writeTaskDBError(c, "list_task_batch_comments", err)
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"comments": comments})
-}
 
 func (a *App) HandleListMyTaskInstances(c *gin.Context) {
 	userID, err := middleware.GetClaims(c)
@@ -256,7 +32,7 @@ func (a *App) HandleListMyTaskInstances(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"tasks": instances})
+	c.JSON(http.StatusOK, gin.H{"instances": instances})
 }
 
 func (a *App) HandleGetTaskInstance(c *gin.Context) {
@@ -562,6 +338,10 @@ func (a *App) HandleReviewTaskSubmission(c *gin.Context) {
 		a.writeTaskDBError(c, "get_task_instance_for_submission_review", err)
 		return
 	}
+	if pathInstanceID := c.Param("instance_id"); pathInstanceID != "" && instance.ID != pathInstanceID {
+		writeError(c, http.StatusNotFound, "not_found", nil)
+		return
+	}
 	if !canManageTaskInstance(instance, userID, currentUserIsAdmin(c)) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
@@ -636,26 +416,6 @@ func (a *App) HandleListTaskAttachments(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"attachments": attachments})
 }
 
-func (a *App) getAuthorizedTaskBatch(c *gin.Context) (models.TaskBatch, bool) {
-	userID, err := middleware.GetClaims(c)
-	if err != nil {
-		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
-		return models.TaskBatch{}, false
-	}
-
-	batch, err := a.db.GetTaskBatch(c.Request.Context(), c.Param("batch_id"))
-	if err != nil {
-		a.writeTaskDBError(c, "get_task_batch", err)
-		return models.TaskBatch{}, false
-	}
-	if !canManageTaskBatch(batch.CreatedBy, userID, currentUserIsAdmin(c)) {
-		writeError(c, http.StatusForbidden, "forbidden", nil)
-		return models.TaskBatch{}, false
-	}
-
-	return batch, true
-}
-
 func (a *App) getAuthorizedTaskInstance(c *gin.Context) (models.TaskInstance, bool) {
 	userID, err := middleware.GetClaims(c)
 	if err != nil {
@@ -663,7 +423,7 @@ func (a *App) getAuthorizedTaskInstance(c *gin.Context) (models.TaskInstance, bo
 		return models.TaskInstance{}, false
 	}
 
-	instance, err := a.db.GetTaskInstance(c.Request.Context(), c.Param("task_instance_id"))
+	instance, err := a.db.GetTaskInstance(c.Request.Context(), c.Param("instance_id"))
 	if err != nil {
 		a.writeTaskDBError(c, "get_task_instance", err)
 		return models.TaskInstance{}, false
@@ -710,7 +470,7 @@ func (a *App) authorizeAttachmentScope(c *gin.Context, write bool) (string, stri
 		return models.AttachmentScopeBatch, batch.ID, true
 	}
 
-	instanceID := c.Param("task_instance_id")
+	instanceID := c.Param("instance_id")
 	instance, err := a.db.GetTaskInstance(c.Request.Context(), instanceID)
 	if err != nil {
 		a.writeTaskDBError(c, "get_task_instance_for_attachment", err)
@@ -747,79 +507,6 @@ func (a *App) writeTaskDBError(c *gin.Context, handler string, err error) {
 		a.toSentry(c, handler, "db", sentry.LevelError, err)
 		writeError(c, http.StatusInternalServerError, "internal_error", nil)
 	}
-}
-
-func validateTaskTemplateInput(input models.TaskTemplateInput) map[string]string {
-	details := map[string]string{}
-	if strings.TrimSpace(input.Title) == "" {
-		details["title"] = "title is required"
-	}
-	return details
-}
-
-func validateCreateTaskBatch(input models.CreateTaskBatch) map[string]string {
-	details := map[string]string{}
-
-	if input.TemplateID == nil && input.Template == nil {
-		details["template"] = "template or template_id is required"
-	}
-	if input.TemplateID != nil && input.Template != nil {
-		details["template"] = "provide either template or template_id, not both"
-	}
-	if input.Template != nil {
-		for key, value := range validateTaskTemplateInput(*input.Template) {
-			details["template."+key] = value
-		}
-	}
-	if input.TemplateID != nil && strings.TrimSpace(*input.TemplateID) == "" {
-		details["template_id"] = "template_id cannot be empty"
-	}
-	if input.AssignmentMode != nil && !models.IsValidAssignmentMode(*input.AssignmentMode) {
-		details["assignment_mode"] = "assignment_mode must be same_work or customized_work"
-	}
-	if len(input.Assignments) == 0 {
-		details["assignments"] = "at least one assignment is required"
-	}
-
-	assignmentKeys := map[string]bool{}
-	for index, assignment := range input.Assignments {
-		prefix := "assignments[" + strconv.Itoa(index) + "]."
-		if strings.TrimSpace(assignment.AssigneeID) == "" {
-			details[prefix+"assignee_id"] = "assignee_id is required"
-		}
-		if assignment.AssignmentKey != nil && strings.TrimSpace(*assignment.AssignmentKey) == "" {
-			details[prefix+"assignment_key"] = "assignment_key cannot be empty"
-		} else if assignment.AssignmentKey != nil {
-			if assignmentKeys[*assignment.AssignmentKey] {
-				details[prefix+"assignment_key"] = "assignment_key must be unique within the batch"
-			}
-			assignmentKeys[*assignment.AssignmentKey] = true
-		}
-		if assignment.Overrides != nil && assignment.Overrides.Title != nil && strings.TrimSpace(*assignment.Overrides.Title) == "" {
-			details[prefix+"overrides.title"] = "override title cannot be empty"
-		}
-	}
-	for index, dependency := range input.Dependencies {
-		prefix := "dependencies[" + strconv.Itoa(index) + "]."
-		if strings.TrimSpace(dependency.AssignmentKey) == "" {
-			details[prefix+"assignment_key"] = "assignment_key is required"
-		} else if !assignmentKeys[dependency.AssignmentKey] {
-			details[prefix+"assignment_key"] = "assignment_key must reference an assignment in this batch"
-		}
-		if strings.TrimSpace(dependency.DependsOnAssignmentKey) == "" {
-			details[prefix+"depends_on_assignment_key"] = "depends_on_assignment_key is required"
-		} else if !assignmentKeys[dependency.DependsOnAssignmentKey] {
-			details[prefix+"depends_on_assignment_key"] = "depends_on_assignment_key must reference an assignment in this batch"
-		}
-		if dependency.AssignmentKey == dependency.DependsOnAssignmentKey {
-			details[prefix+"depends_on_assignment_key"] = "task cannot depend on itself"
-		}
-		if dependency.DependencyType != nil && !models.IsValidTaskDependencyType(*dependency.DependencyType) {
-			details[prefix+"dependency_type"] = "dependency_type must be blocks_start or blocks_completion"
-		}
-	}
-
-	return details
 }
 
 func validateCreateTaskInstanceDependency(input models.CreateTaskInstanceDependency) map[string]string {
@@ -877,14 +564,6 @@ func currentUserIsAdmin(c *gin.Context) bool {
 	}
 	isAdmin, ok := value.(bool)
 	return ok && isAdmin
-}
-
-func canManageTaskTemplate(template models.TaskTemplate, userID string, isAdmin bool) bool {
-	return isAdmin || template.CreatedBy == userID
-}
-
-func canManageTaskBatch(createdBy, userID string, isAdmin bool) bool {
-	return isAdmin || createdBy == userID
 }
 
 func canAccessTaskInstance(instance models.TaskInstance, userID string, isAdmin bool) bool {
