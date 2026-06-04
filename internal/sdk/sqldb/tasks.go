@@ -39,12 +39,13 @@ func (s *service) UpdateTaskTemplate(ctx context.Context, templateID string, inp
 		    instructions = COALESCE($4, instructions),
 		    default_priority = COALESCE($5, default_priority),
 		    default_due_at = COALESCE($6, default_due_at),
-		    metadata = COALESCE($7::jsonb, metadata),
+		    review_required = COALESCE($7, review_required),
+		    metadata = COALESCE($8::jsonb, metadata),
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
 		  AND archived_at IS NULL
 		RETURNING id::text, created_by, title, description, instructions, default_priority,
-		          default_due_at, metadata::text, created_at, updated_at, archived_at
+		          default_due_at, review_required, metadata::text, created_at, updated_at, archived_at
 	`
 
 	template, err := scanTaskTemplate(s.db.QueryRowContext(ctx, query,
@@ -54,6 +55,7 @@ func (s *service) UpdateTaskTemplate(ctx context.Context, templateID string, inp
 		NullString(input.Instructions),
 		NullString(input.DefaultPriority),
 		NullTime(input.DefaultDueAt),
+		NullBool(input.ReviewRequired),
 		metadataJSON,
 	))
 	if err != nil {
@@ -184,6 +186,7 @@ func (s *service) CreateTaskBatch(ctx context.Context, creatorID string, input m
 	}
 
 	instances := make([]models.TaskInstance, 0, len(input.Assignments))
+	instancesByAssignmentKey := make(map[string]models.TaskInstance, len(input.Assignments))
 	for _, assignment := range input.Assignments {
 		instance, err := createTaskInstanceForAssignment(ctx, tx, creatorID, template, batch, assignment)
 		if err != nil {
@@ -196,6 +199,14 @@ func (s *service) CreateTaskBatch(ctx context.Context, creatorID string, input m
 			return models.TaskBatchCreateResult{}, err
 		}
 		instances = append(instances, instance)
+		if instance.AssignmentKey != nil {
+			instancesByAssignmentKey[*instance.AssignmentKey] = instance
+		}
+	}
+
+	dependencies, err := createTaskBatchDependencies(ctx, tx, creatorID, input.Dependencies, instancesByAssignmentKey)
+	if err != nil {
+		return models.TaskBatchCreateResult{}, err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -206,6 +217,7 @@ func (s *service) CreateTaskBatch(ctx context.Context, creatorID string, input m
 		Batch:          batch,
 		Template:       template,
 		Instances:      instances,
+		Dependencies:   dependencies,
 		TotalInstances: len(instances),
 	}, nil
 }
@@ -226,14 +238,13 @@ func (s *service) GetTaskBatchProgress(ctx context.Context, batchID string, incl
 	}
 
 	summary := map[string]int{
-		"assigned":    0,
-		"accepted":    0,
-		"in_progress": 0,
-		"blocked":     0,
-		"completed":   0,
-		"rejected":    0,
-		"cancelled":   0,
-		"overdue":     0,
+		"assigned":       0,
+		"in_progress":    0,
+		"blocked":        0,
+		"pending_review": 0,
+		"completed":      0,
+		"cancelled":      0,
+		"overdue":        0,
 	}
 
 	now := time.Now()
@@ -286,7 +297,7 @@ func (s *service) ListTaskInstancesByAssignee(ctx context.Context, assigneeID st
 	query := `
 		SELECT id::text, batch_id::text, template_id::text, created_by, assignee_id,
 		       assignment_key, title, description, instructions, priority, due_at, status,
-		       progress_percent, started_at, completed_at, cancelled_at, completion_note,
+		       review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
 		       template_snapshot::text, custom_payload::text,
 		       replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		       created_at, updated_at
@@ -333,13 +344,14 @@ func (s *service) UpdateTaskInstance(ctx context.Context, taskInstanceID, actorI
 		    instructions = COALESCE($4, instructions),
 		    priority = COALESCE($5, priority),
 		    due_at = COALESCE($6, due_at),
-		    progress_percent = COALESCE($7, progress_percent),
-		    custom_payload = COALESCE($8::jsonb, custom_payload),
+		    review_required = COALESCE($7, review_required),
+		    progress_percent = COALESCE($8, progress_percent),
+		    custom_payload = COALESCE($9::jsonb, custom_payload),
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
 		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
 		          assignment_key, title, description, instructions, priority, due_at, status,
-		          progress_percent, started_at, completed_at, cancelled_at, completion_note,
+		          review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
 		          template_snapshot::text, custom_payload::text,
 		          replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		          created_at, updated_at
@@ -352,6 +364,7 @@ func (s *service) UpdateTaskInstance(ctx context.Context, taskInstanceID, actorI
 		NullString(input.Instructions),
 		NullString(input.Priority),
 		NullTime(input.DueAt),
+		NullBool(input.ReviewRequired),
 		progressParam,
 		customPayloadJSON,
 	))
@@ -392,12 +405,16 @@ func (s *service) UpdateTaskInstanceStatus(ctx context.Context, taskInstanceID, 
 		return models.TaskInstance{}, err
 	}
 
+	if err := enforceTaskDependenciesForStatus(ctx, tx, taskInstanceID, input.Status); err != nil {
+		return models.TaskInstance{}, err
+	}
+
 	const query = `
 		UPDATE todos.task_instances
 		SET status = $2,
 		    completion_note = COALESCE($3, completion_note),
 		    started_at = CASE
-		        WHEN $2 IN ('accepted', 'in_progress') AND started_at IS NULL THEN CURRENT_TIMESTAMP
+		        WHEN $2 IN ('in_progress', 'pending_review', 'completed') AND started_at IS NULL THEN CURRENT_TIMESTAMP
 		        WHEN $2 = 'assigned' THEN NULL
 		        ELSE started_at
 		    END,
@@ -419,7 +436,7 @@ func (s *service) UpdateTaskInstanceStatus(ctx context.Context, taskInstanceID, 
 		WHERE id = $1
 		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
 		          assignment_key, title, description, instructions, priority, due_at, status,
-		          progress_percent, started_at, completed_at, cancelled_at, completion_note,
+		          review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
 		          template_snapshot::text, custom_payload::text,
 		          replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		          created_at, updated_at
@@ -462,6 +479,60 @@ func (s *service) UpdateTaskInstanceStatus(ctx context.Context, taskInstanceID, 
 	return updated, nil
 }
 
+func (s *service) SubmitTaskForReview(ctx context.Context, taskInstanceID, submittedBy string, input models.SubmitTaskReview) (models.TaskInstance, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return models.TaskInstance{}, fmt.Errorf("beginning task review submission transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	oldInstance, err := getTaskInstance(ctx, tx, taskInstanceID)
+	if err != nil {
+		return models.TaskInstance{}, err
+	}
+	if !oldInstance.ReviewRequired {
+		return models.TaskInstance{}, ErrCheckViolation
+	}
+	if err := enforceTaskDependenciesForStatus(ctx, tx, taskInstanceID, models.TaskStatusCompleted); err != nil {
+		return models.TaskInstance{}, err
+	}
+
+	submission, err := createTaskSubmission(ctx, tx, taskInstanceID, submittedBy, models.CreateTaskSubmission{
+		Note: input.Note,
+	})
+	if err != nil {
+		return models.TaskInstance{}, err
+	}
+
+	updated, err := setTaskInstancePendingReview(ctx, tx, taskInstanceID, input.Note)
+	if err != nil {
+		return models.TaskInstance{}, err
+	}
+
+	if oldInstance.Status != updated.Status {
+		if err := createTaskInstanceEvent(ctx, tx, updated.ID, submittedBy, "status_changed", map[string]any{
+			"status": oldInstance.Status,
+		}, map[string]any{
+			"status":        updated.Status,
+			"submission_id": submission.ID,
+		}); err != nil {
+			return models.TaskInstance{}, err
+		}
+	}
+	if err := createTaskInstanceEvent(ctx, tx, taskInstanceID, submittedBy, "submission_added", nil, map[string]any{
+		"submission_id": submission.ID,
+		"status":        submission.Status,
+	}); err != nil {
+		return models.TaskInstance{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return models.TaskInstance{}, fmt.Errorf("committing task review submission transaction: %w", err)
+	}
+
+	return updated, nil
+}
+
 func (s *service) ListTaskInstanceEvents(ctx context.Context, taskInstanceID string) ([]models.TaskInstanceEvent, error) {
 	const query = `
 		SELECT id::text, task_instance_id::text, actor_id, event_type,
@@ -490,6 +561,46 @@ func (s *service) ListTaskInstanceEvents(ctx context.Context, taskInstanceID str
 	}
 
 	return events, nil
+}
+
+func (s *service) CreateTaskInstanceDependency(ctx context.Context, taskInstanceID, creatorID string, input models.CreateTaskInstanceDependency) (models.TaskInstanceDependency, error) {
+	dependencyType, err := normalizeTaskDependencyType(input.DependencyType)
+	if err != nil {
+		return models.TaskInstanceDependency{}, err
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return models.TaskInstanceDependency{}, fmt.Errorf("beginning task dependency transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	dependency, err := createTaskInstanceDependency(ctx, tx, taskInstanceID, input.DependsOnTaskInstanceID, creatorID, dependencyType)
+	if err != nil {
+		return models.TaskInstanceDependency{}, err
+	}
+
+	if err := createTaskInstanceEvent(ctx, tx, taskInstanceID, creatorID, "dependency_added", nil, map[string]any{
+		"dependency_id":               dependency.ID,
+		"depends_on_task_instance_id": dependency.DependsOnTaskInstanceID,
+		"dependency_type":             dependency.DependencyType,
+	}); err != nil {
+		return models.TaskInstanceDependency{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return models.TaskInstanceDependency{}, fmt.Errorf("committing task dependency transaction: %w", err)
+	}
+
+	return dependency, nil
+}
+
+func (s *service) ListTaskInstanceDependencies(ctx context.Context, taskInstanceID string) ([]models.TaskInstanceDependency, error) {
+	return listTaskInstanceDependencies(ctx, s.db, taskInstanceID)
+}
+
+func (s *service) ListTaskInstanceDependents(ctx context.Context, taskInstanceID string) ([]models.TaskInstanceDependency, error) {
+	return listTaskInstanceDependents(ctx, s.db, taskInstanceID)
 }
 
 func (s *service) CreateTaskComment(ctx context.Context, taskInstanceID, authorID string, input models.CreateTaskComment) (models.TaskComment, error) {
@@ -728,19 +839,37 @@ func (s *service) CreateTaskSubmission(ctx context.Context, taskInstanceID, subm
 	}
 	defer tx.Rollback()
 
-	const query = `
-		INSERT INTO todos.task_submissions (task_instance_id, submitted_by, note)
-		VALUES ($1, $2, $3)
-		RETURNING id::text, task_instance_id::text, submitted_by, note, status,
-		          created_at, reviewed_at, reviewed_by
-	`
-
-	submission, err := scanTaskSubmission(tx.QueryRowContext(ctx, query, taskInstanceID, submittedBy, NullString(input.Note)))
+	oldInstance, err := getTaskInstance(ctx, tx, taskInstanceID)
 	if err != nil {
-		if isPgError(err, foreignKeyViolation) {
-			return models.TaskSubmission{}, ErrForeignKeyViolation
+		return models.TaskSubmission{}, err
+	}
+	shouldRequestReview := oldInstance.ReviewRequired && !models.IsTerminalTaskStatus(oldInstance.Status)
+	if shouldRequestReview {
+		if err := enforceTaskDependenciesForStatus(ctx, tx, taskInstanceID, models.TaskStatusCompleted); err != nil {
+			return models.TaskSubmission{}, err
 		}
-		return models.TaskSubmission{}, fmt.Errorf("creating task submission: %w", err)
+	}
+
+	submission, err := createTaskSubmission(ctx, tx, taskInstanceID, submittedBy, input)
+	if err != nil {
+		return models.TaskSubmission{}, err
+	}
+
+	if shouldRequestReview {
+		updated, err := setTaskInstancePendingReview(ctx, tx, taskInstanceID, input.Note)
+		if err != nil {
+			return models.TaskSubmission{}, err
+		}
+		if oldInstance.Status != updated.Status {
+			if err := createTaskInstanceEvent(ctx, tx, taskInstanceID, submittedBy, "status_changed", map[string]any{
+				"status": oldInstance.Status,
+			}, map[string]any{
+				"status":        updated.Status,
+				"submission_id": submission.ID,
+			}); err != nil {
+				return models.TaskSubmission{}, err
+			}
+		}
 	}
 
 	if err := createTaskInstanceEvent(ctx, tx, taskInstanceID, submittedBy, "submission_added", nil, map[string]any{
@@ -799,6 +928,11 @@ func (s *service) ReviewTaskSubmission(ctx context.Context, submissionID, review
 		return models.TaskSubmission{}, err
 	}
 
+	oldInstance, err := getTaskInstance(ctx, tx, oldSubmission.TaskInstanceID)
+	if err != nil {
+		return models.TaskSubmission{}, err
+	}
+
 	const query = `
 		UPDATE todos.task_submissions
 		SET status = $2,
@@ -821,6 +955,23 @@ func (s *service) ReviewTaskSubmission(ctx context.Context, submissionID, review
 			return models.TaskSubmission{}, ErrCheckViolation
 		}
 		return models.TaskSubmission{}, fmt.Errorf("reviewing task submission: %w", err)
+	}
+
+	if oldInstance.ReviewRequired {
+		updatedInstance, err := applyTaskSubmissionReviewToTaskInstance(ctx, tx, oldInstance, submission)
+		if err != nil {
+			return models.TaskSubmission{}, err
+		}
+		if oldInstance.Status != updatedInstance.Status {
+			if err := createTaskInstanceEvent(ctx, tx, submission.TaskInstanceID, reviewerID, "status_changed", map[string]any{
+				"status": oldInstance.Status,
+			}, map[string]any{
+				"status":        updatedInstance.Status,
+				"submission_id": submission.ID,
+			}); err != nil {
+				return models.TaskSubmission{}, err
+			}
+		}
 	}
 
 	if err := createTaskInstanceEvent(ctx, tx, submission.TaskInstanceID, reviewerID, "submission_reviewed", map[string]any{
@@ -854,11 +1005,12 @@ func createTaskTemplate(ctx context.Context, runner sqlRunner, creatorID string,
 			instructions,
 			default_priority,
 			default_due_at,
+			review_required,
 			metadata
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+		VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, FALSE), $8::jsonb)
 		RETURNING id::text, created_by, title, description, instructions, default_priority,
-		          default_due_at, metadata::text, created_at, updated_at, archived_at
+		          default_due_at, review_required, metadata::text, created_at, updated_at, archived_at
 	`
 
 	template, err := scanTaskTemplate(runner.QueryRowContext(ctx, query,
@@ -868,6 +1020,7 @@ func createTaskTemplate(ctx context.Context, runner sqlRunner, creatorID string,
 		NullString(input.Instructions),
 		NullString(input.DefaultPriority),
 		NullTime(input.DefaultDueAt),
+		NullBool(input.ReviewRequired),
 		metadataJSON,
 	))
 	if err != nil {
@@ -886,7 +1039,7 @@ func createTaskTemplate(ctx context.Context, runner sqlRunner, creatorID string,
 func getTaskTemplate(ctx context.Context, runner sqlRunner, templateID string) (models.TaskTemplate, error) {
 	const query = `
 		SELECT id::text, created_by, title, description, instructions, default_priority,
-		       default_due_at, metadata::text, created_at, updated_at, archived_at
+		       default_due_at, review_required, metadata::text, created_at, updated_at, archived_at
 		FROM todos.task_templates
 		WHERE id = $1
 		  AND archived_at IS NULL
@@ -906,7 +1059,7 @@ func getTaskTemplate(ctx context.Context, runner sqlRunner, templateID string) (
 func getTaskTemplateForCreator(ctx context.Context, runner sqlRunner, templateID, creatorID string) (models.TaskTemplate, error) {
 	const query = `
 		SELECT id::text, created_by, title, description, instructions, default_priority,
-		       default_due_at, metadata::text, created_at, updated_at, archived_at
+		       default_due_at, review_required, metadata::text, created_at, updated_at, archived_at
 		FROM todos.task_templates
 		WHERE id = $1
 		  AND created_by = $2
@@ -959,10 +1112,16 @@ func getTaskBatchCreateResult(ctx context.Context, runner sqlRunner, batchID str
 		return models.TaskBatchCreateResult{}, err
 	}
 
+	dependencies, err := listTaskBatchDependencies(ctx, runner, batchID)
+	if err != nil {
+		return models.TaskBatchCreateResult{}, err
+	}
+
 	return models.TaskBatchCreateResult{
 		Batch:          batch,
 		Template:       template,
 		Instances:      instances,
+		Dependencies:   dependencies,
 		TotalInstances: len(instances),
 	}, nil
 }
@@ -1011,13 +1170,14 @@ func createTaskInstanceForAssignment(ctx context.Context, runner sqlRunner, crea
 			priority,
 			due_at,
 			status,
+			review_required,
 			template_snapshot,
 			custom_payload
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'assigned', $11::jsonb, $12::jsonb)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'assigned', $11, $12::jsonb, $13::jsonb)
 		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
 		          assignment_key, title, description, instructions, priority, due_at, status,
-		          progress_percent, started_at, completed_at, cancelled_at, completion_note,
+		          review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
 		          template_snapshot::text, custom_payload::text,
 		          replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		          created_at, updated_at
@@ -1034,6 +1194,7 @@ func createTaskInstanceForAssignment(ctx context.Context, runner sqlRunner, crea
 		NullString(resolved.Instructions),
 		NullString(resolved.Priority),
 		NullTime(resolved.DueAt),
+		resolved.ReviewRequired,
 		templateSnapshot,
 		customPayloadJSON,
 	))
@@ -1057,7 +1218,7 @@ func getTaskInstance(ctx context.Context, runner sqlRunner, taskInstanceID strin
 	const query = `
 		SELECT id::text, batch_id::text, template_id::text, created_by, assignee_id,
 		       assignment_key, title, description, instructions, priority, due_at, status,
-		       progress_percent, started_at, completed_at, cancelled_at, completion_note,
+		       review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
 		       template_snapshot::text, custom_payload::text,
 		       replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		       created_at, updated_at
@@ -1080,7 +1241,7 @@ func listTaskBatchInstances(ctx context.Context, runner sqlRunner, batchID strin
 	const query = `
 		SELECT id::text, batch_id::text, template_id::text, created_by, assignee_id,
 		       assignment_key, title, description, instructions, priority, due_at, status,
-		       progress_percent, started_at, completed_at, cancelled_at, completion_note,
+		       review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
 		       template_snapshot::text, custom_payload::text,
 		       replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		       created_at, updated_at
@@ -1096,6 +1257,253 @@ func listTaskBatchInstances(ctx context.Context, runner sqlRunner, batchID strin
 	defer rows.Close()
 
 	return scanTaskInstances(rows)
+}
+
+func createTaskBatchDependencies(ctx context.Context, runner sqlRunner, creatorID string, inputs []models.TaskBatchDependency, instancesByAssignmentKey map[string]models.TaskInstance) ([]models.TaskInstanceDependency, error) {
+	if len(inputs) == 0 {
+		return nil, nil
+	}
+
+	dependencies := make([]models.TaskInstanceDependency, 0, len(inputs))
+	for _, input := range inputs {
+		instance, ok := instancesByAssignmentKey[input.AssignmentKey]
+		if !ok {
+			return nil, ErrForeignKeyViolation
+		}
+		dependsOnInstance, ok := instancesByAssignmentKey[input.DependsOnAssignmentKey]
+		if !ok {
+			return nil, ErrForeignKeyViolation
+		}
+
+		dependencyType, err := normalizeTaskDependencyType(input.DependencyType)
+		if err != nil {
+			return nil, err
+		}
+
+		dependency, err := createTaskInstanceDependency(ctx, runner, instance.ID, dependsOnInstance.ID, creatorID, dependencyType)
+		if err != nil {
+			return nil, err
+		}
+		if err := createTaskInstanceEvent(ctx, runner, instance.ID, creatorID, "dependency_added", nil, map[string]any{
+			"dependency_id":               dependency.ID,
+			"depends_on_task_instance_id": dependency.DependsOnTaskInstanceID,
+			"dependency_type":             dependency.DependencyType,
+		}); err != nil {
+			return nil, err
+		}
+
+		dependencies = append(dependencies, dependency)
+	}
+
+	return dependencies, nil
+}
+
+func createTaskInstanceDependency(ctx context.Context, runner sqlRunner, taskInstanceID, dependsOnTaskInstanceID, creatorID, dependencyType string) (models.TaskInstanceDependency, error) {
+	if err := validateTaskInstanceDependency(ctx, runner, taskInstanceID, dependsOnTaskInstanceID); err != nil {
+		return models.TaskInstanceDependency{}, err
+	}
+
+	const query = `
+		INSERT INTO todos.task_instance_dependencies (
+			task_instance_id,
+			depends_on_task_instance_id,
+			dependency_type,
+			created_by
+		)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id::text, task_instance_id::text, depends_on_task_instance_id::text,
+		          dependency_type, created_by, created_at
+	`
+
+	dependency, err := scanTaskInstanceDependency(runner.QueryRowContext(ctx, query,
+		taskInstanceID,
+		dependsOnTaskInstanceID,
+		dependencyType,
+		creatorID,
+	))
+	if err != nil {
+		if isPgError(err, uniqueViolation) {
+			return models.TaskInstanceDependency{}, ErrDBDuplicatedEntry
+		}
+		if isPgError(err, foreignKeyViolation) {
+			return models.TaskInstanceDependency{}, ErrForeignKeyViolation
+		}
+		if isPgError(err, checkViolation) || isPgError(err, notNullViolation) {
+			return models.TaskInstanceDependency{}, ErrCheckViolation
+		}
+		return models.TaskInstanceDependency{}, fmt.Errorf("creating task instance dependency: %w", err)
+	}
+
+	return dependency, nil
+}
+
+func normalizeTaskDependencyType(dependencyType *string) (string, error) {
+	resolved := models.DependencyTypeBlocksCompletion
+	if dependencyType != nil {
+		resolved = *dependencyType
+	}
+	if !models.IsValidTaskDependencyType(resolved) {
+		return "", ErrCheckViolation
+	}
+	return resolved, nil
+}
+
+func validateTaskInstanceDependency(ctx context.Context, runner sqlRunner, taskInstanceID, dependsOnTaskInstanceID string) error {
+	if taskInstanceID == dependsOnTaskInstanceID {
+		return ErrCheckViolation
+	}
+
+	const batchQuery = `
+		SELECT task.batch_id::text, depends_on.batch_id::text
+		FROM todos.task_instances task
+		CROSS JOIN todos.task_instances depends_on
+		WHERE task.id = $1
+		  AND depends_on.id = $2
+	`
+
+	var taskBatchID, dependsOnBatchID string
+	if err := runner.QueryRowContext(ctx, batchQuery, taskInstanceID, dependsOnTaskInstanceID).Scan(&taskBatchID, &dependsOnBatchID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrForeignKeyViolation
+		}
+		return fmt.Errorf("validating task dependency batches: %w", err)
+	}
+	if taskBatchID != dependsOnBatchID {
+		return ErrCheckViolation
+	}
+
+	cycle, err := taskDependencyWouldCreateCycle(ctx, runner, taskInstanceID, dependsOnTaskInstanceID)
+	if err != nil {
+		return err
+	}
+	if cycle {
+		return ErrTaskDependencyCycle
+	}
+
+	return nil
+}
+
+func taskDependencyWouldCreateCycle(ctx context.Context, runner sqlRunner, taskInstanceID, dependsOnTaskInstanceID string) (bool, error) {
+	const query = `
+		WITH RECURSIVE dependency_chain(depends_on_task_instance_id) AS (
+			SELECT depends_on_task_instance_id
+			FROM todos.task_instance_dependencies
+			WHERE task_instance_id = $2
+
+			UNION
+
+			SELECT dependency.depends_on_task_instance_id
+			FROM todos.task_instance_dependencies dependency
+			INNER JOIN dependency_chain chain
+				ON dependency.task_instance_id = chain.depends_on_task_instance_id
+		)
+		SELECT EXISTS (
+			SELECT 1
+			FROM dependency_chain
+			WHERE depends_on_task_instance_id = $1
+		)
+	`
+
+	var cycle bool
+	if err := runner.QueryRowContext(ctx, query, taskInstanceID, dependsOnTaskInstanceID).Scan(&cycle); err != nil {
+		return false, fmt.Errorf("checking task dependency cycle: %w", err)
+	}
+	return cycle, nil
+}
+
+func enforceTaskDependenciesForStatus(ctx context.Context, runner sqlRunner, taskInstanceID, status string) error {
+	switch status {
+	case models.TaskStatusInProgress:
+		return enforceTaskDependencyType(ctx, runner, taskInstanceID, models.DependencyTypeBlocksStart)
+	case models.TaskStatusCompleted:
+		if err := enforceTaskDependencyType(ctx, runner, taskInstanceID, models.DependencyTypeBlocksStart); err != nil {
+			return err
+		}
+		return enforceTaskDependencyType(ctx, runner, taskInstanceID, models.DependencyTypeBlocksCompletion)
+	default:
+		return nil
+	}
+}
+
+func enforceTaskDependencyType(ctx context.Context, runner sqlRunner, taskInstanceID, dependencyType string) error {
+	const query = `
+		SELECT EXISTS (
+			SELECT 1
+			FROM todos.task_instance_dependencies dependency
+			INNER JOIN todos.task_instances depends_on
+				ON depends_on.id = dependency.depends_on_task_instance_id
+			WHERE dependency.task_instance_id = $1
+			  AND dependency.dependency_type = $2
+			  AND depends_on.status <> 'completed'
+		)
+	`
+
+	var blocked bool
+	if err := runner.QueryRowContext(ctx, query, taskInstanceID, dependencyType).Scan(&blocked); err != nil {
+		return fmt.Errorf("checking task dependency status: %w", err)
+	}
+	if blocked {
+		return ErrTaskBlockedByDeps
+	}
+
+	return nil
+}
+
+func listTaskBatchDependencies(ctx context.Context, runner sqlRunner, batchID string) ([]models.TaskInstanceDependency, error) {
+	const query = `
+		SELECT dependency.id::text, dependency.task_instance_id::text,
+		       dependency.depends_on_task_instance_id::text, dependency.dependency_type,
+		       dependency.created_by, dependency.created_at
+		FROM todos.task_instance_dependencies dependency
+		INNER JOIN todos.task_instances task
+			ON task.id = dependency.task_instance_id
+		WHERE task.batch_id = $1
+		ORDER BY dependency.created_at ASC
+	`
+
+	rows, err := runner.QueryContext(ctx, query, batchID)
+	if err != nil {
+		return nil, fmt.Errorf("listing task batch dependencies: %w", err)
+	}
+	defer rows.Close()
+
+	return scanTaskInstanceDependencies(rows)
+}
+
+func listTaskInstanceDependencies(ctx context.Context, runner sqlRunner, taskInstanceID string) ([]models.TaskInstanceDependency, error) {
+	const query = `
+		SELECT id::text, task_instance_id::text, depends_on_task_instance_id::text,
+		       dependency_type, created_by, created_at
+		FROM todos.task_instance_dependencies
+		WHERE task_instance_id = $1
+		ORDER BY created_at ASC
+	`
+
+	rows, err := runner.QueryContext(ctx, query, taskInstanceID)
+	if err != nil {
+		return nil, fmt.Errorf("listing task instance dependencies: %w", err)
+	}
+	defer rows.Close()
+
+	return scanTaskInstanceDependencies(rows)
+}
+
+func listTaskInstanceDependents(ctx context.Context, runner sqlRunner, taskInstanceID string) ([]models.TaskInstanceDependency, error) {
+	const query = `
+		SELECT id::text, task_instance_id::text, depends_on_task_instance_id::text,
+		       dependency_type, created_by, created_at
+		FROM todos.task_instance_dependencies
+		WHERE depends_on_task_instance_id = $1
+		ORDER BY created_at ASC
+	`
+
+	rows, err := runner.QueryContext(ctx, query, taskInstanceID)
+	if err != nil {
+		return nil, fmt.Errorf("listing task instance dependents: %w", err)
+	}
+	defer rows.Close()
+
+	return scanTaskInstanceDependencies(rows)
 }
 
 func createTaskInstanceEvent(ctx context.Context, runner sqlRunner, taskInstanceID, actorID, eventType string, oldValue, newValue map[string]any) error {
@@ -1151,21 +1559,124 @@ func getTaskSubmission(ctx context.Context, runner sqlRunner, submissionID strin
 	return submission, nil
 }
 
+func createTaskSubmission(ctx context.Context, runner sqlRunner, taskInstanceID, submittedBy string, input models.CreateTaskSubmission) (models.TaskSubmission, error) {
+	const query = `
+		INSERT INTO todos.task_submissions (task_instance_id, submitted_by, note)
+		VALUES ($1, $2, $3)
+		RETURNING id::text, task_instance_id::text, submitted_by, note, status,
+		          created_at, reviewed_at, reviewed_by
+	`
+
+	submission, err := scanTaskSubmission(runner.QueryRowContext(ctx, query, taskInstanceID, submittedBy, NullString(input.Note)))
+	if err != nil {
+		if isPgError(err, foreignKeyViolation) {
+			return models.TaskSubmission{}, ErrForeignKeyViolation
+		}
+		return models.TaskSubmission{}, fmt.Errorf("creating task submission: %w", err)
+	}
+
+	return submission, nil
+}
+
+func setTaskInstancePendingReview(ctx context.Context, runner sqlRunner, taskInstanceID string, note *string) (models.TaskInstance, error) {
+	const query = `
+		UPDATE todos.task_instances
+		SET status = 'pending_review',
+		    completion_note = COALESCE($2, completion_note),
+		    started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
+		    completed_at = NULL,
+		    cancelled_at = NULL,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
+		          assignment_key, title, description, instructions, priority, due_at, status,
+		          review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
+		          template_snapshot::text, custom_payload::text,
+		          replaced_by_task_instance_id::text, replaces_task_instance_id::text,
+		          created_at, updated_at
+	`
+
+	instance, err := scanTaskInstance(runner.QueryRowContext(ctx, query, taskInstanceID, NullString(note)))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.TaskInstance{}, ErrDBNotFound
+		}
+		if isPgError(err, checkViolation) {
+			return models.TaskInstance{}, ErrCheckViolation
+		}
+		return models.TaskInstance{}, fmt.Errorf("setting task instance pending review: %w", err)
+	}
+
+	return instance, nil
+}
+
+func applyTaskSubmissionReviewToTaskInstance(ctx context.Context, runner sqlRunner, instance models.TaskInstance, submission models.TaskSubmission) (models.TaskInstance, error) {
+	status := models.TaskStatusInProgress
+	if submission.Status == models.SubmissionStatusAccepted {
+		status = models.TaskStatusCompleted
+	}
+
+	const query = `
+		UPDATE todos.task_instances
+		SET status = $2,
+		    completion_note = CASE
+		        WHEN $2 = 'completed' THEN COALESCE($3, completion_note)
+		        ELSE completion_note
+		    END,
+		    started_at = CASE
+		        WHEN started_at IS NULL THEN CURRENT_TIMESTAMP
+		        ELSE started_at
+		    END,
+		    completed_at = CASE
+		        WHEN $2 = 'completed' THEN CURRENT_TIMESTAMP
+		        ELSE NULL
+		    END,
+		    cancelled_at = NULL,
+		    progress_percent = CASE
+		        WHEN $2 = 'completed' THEN 100
+		        ELSE progress_percent
+		    END,
+		    updated_at = CURRENT_TIMESTAMP
+		WHERE id = $1
+		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
+		          assignment_key, title, description, instructions, priority, due_at, status,
+		          review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
+		          template_snapshot::text, custom_payload::text,
+		          replaced_by_task_instance_id::text, replaces_task_instance_id::text,
+		          created_at, updated_at
+	`
+
+	updated, err := scanTaskInstance(runner.QueryRowContext(ctx, query, instance.ID, status, NullString(submission.Note)))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return models.TaskInstance{}, ErrDBNotFound
+		}
+		if isPgError(err, checkViolation) {
+			return models.TaskInstance{}, ErrCheckViolation
+		}
+		return models.TaskInstance{}, fmt.Errorf("updating task instance after submission review: %w", err)
+	}
+
+	return updated, nil
+}
+
 type resolvedAssignment struct {
-	Title        string
-	Description  *string
-	Instructions *string
-	Priority     *string
-	DueAt        *time.Time
+	Title          string
+	Description    *string
+	Instructions   *string
+	Priority       *string
+	DueAt          *time.Time
+	ReviewRequired bool
 }
 
 func resolveAssignment(template models.TaskTemplate, assignment models.TaskAssignmentInput) resolvedAssignment {
 	resolved := resolvedAssignment{
-		Title:        template.Title,
-		Description:  template.Description,
-		Instructions: template.Instructions,
-		Priority:     template.DefaultPriority,
-		DueAt:        template.DefaultDueAt,
+		Title:          template.Title,
+		Description:    template.Description,
+		Instructions:   template.Instructions,
+		Priority:       template.DefaultPriority,
+		DueAt:          template.DefaultDueAt,
+		ReviewRequired: template.ReviewRequired,
 	}
 
 	if assignment.Overrides == nil {
@@ -1185,6 +1696,9 @@ func resolveAssignment(template models.TaskTemplate, assignment models.TaskAssig
 	}
 	if assignment.Overrides.DueAt != nil {
 		resolved.DueAt = assignment.Overrides.DueAt
+	}
+	if assignment.Overrides.ReviewRequired != nil {
+		resolved.ReviewRequired = *assignment.Overrides.ReviewRequired
 	}
 
 	return resolved
@@ -1208,6 +1722,9 @@ func deriveBatchStatus(total int, summary map[string]int) string {
 	}
 	if summary["overdue"] > 0 {
 		return "overdue"
+	}
+	if summary["pending_review"] > 0 {
+		return "attention_required"
 	}
 	if summary["blocked"] > 0 {
 		return "attention_required"
@@ -1251,6 +1768,9 @@ func taskInstanceUpdateEventValue(instance models.TaskInstance, input models.Upd
 	if input.DueAt != nil {
 		value["due_at"] = instance.DueAt
 	}
+	if input.ReviewRequired != nil {
+		value["review_required"] = instance.ReviewRequired
+	}
 	if input.ProgressPercent != nil {
 		value["progress_percent"] = instance.ProgressPercent
 	}
@@ -1274,6 +1794,7 @@ func scanTaskTemplate(scanner rowScanner) (models.TaskTemplate, error) {
 		&instructions,
 		&defaultPriority,
 		&defaultDueAt,
+		&template.ReviewRequired,
 		&metadata,
 		&template.CreatedAt,
 		&template.UpdatedAt,
@@ -1349,6 +1870,7 @@ func scanTaskInstance(scanner rowScanner) (models.TaskInstance, error) {
 		&priority,
 		&dueAt,
 		&instance.Status,
+		&instance.ReviewRequired,
 		&instance.ProgressPercent,
 		&startedAt,
 		&completedAt,
@@ -1435,6 +1957,36 @@ func scanTaskInstanceEvent(scanner rowScanner) (models.TaskInstanceEvent, error)
 	event.NewValue = newMap
 
 	return event, nil
+}
+
+func scanTaskInstanceDependency(scanner rowScanner) (models.TaskInstanceDependency, error) {
+	var dependency models.TaskInstanceDependency
+	if err := scanner.Scan(
+		&dependency.ID,
+		&dependency.TaskInstanceID,
+		&dependency.DependsOnTaskInstanceID,
+		&dependency.DependencyType,
+		&dependency.CreatedBy,
+		&dependency.CreatedAt,
+	); err != nil {
+		return models.TaskInstanceDependency{}, err
+	}
+	return dependency, nil
+}
+
+func scanTaskInstanceDependencies(rows *sql.Rows) ([]models.TaskInstanceDependency, error) {
+	var dependencies []models.TaskInstanceDependency
+	for rows.Next() {
+		dependency, err := scanTaskInstanceDependency(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning task instance dependency: %w", err)
+		}
+		dependencies = append(dependencies, dependency)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating task instance dependencies: %w", err)
+	}
+	return dependencies, nil
 }
 
 func scanTaskComment(scanner rowScanner) (models.TaskComment, error) {

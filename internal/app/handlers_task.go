@@ -326,13 +326,31 @@ func (a *App) HandleUpdateTaskInstanceStatus(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_task_status", map[string]string{"status": "unsupported status"})
 		return
 	}
+	if input.Status == models.TaskStatusPendingReview {
+		writeError(c, http.StatusBadRequest, "invalid_task_status", map[string]string{"status": "set status to completed to request review"})
+		return
+	}
 
 	isAdmin := currentUserIsAdmin(c)
-	if !canManageTaskInstance(instance, userID, isAdmin) {
+	canManage := canManageTaskInstance(instance, userID, isAdmin)
+	if !canManage {
 		if instance.AssigneeID != userID || input.Status == models.TaskStatusCancelled {
 			writeError(c, http.StatusForbidden, "forbidden", nil)
 			return
 		}
+	}
+
+	if input.Status == models.TaskStatusCompleted && instance.ReviewRequired && !canManage {
+		updated, err := a.db.SubmitTaskForReview(c.Request.Context(), instance.ID, userID, models.SubmitTaskReview{
+			Note: input.CompletionNote,
+		})
+		if err != nil {
+			a.writeTaskDBError(c, "submit_task_for_review", err)
+			return
+		}
+
+		c.JSON(http.StatusOK, updated)
+		return
 	}
 
 	updated, err := a.db.UpdateTaskInstanceStatus(c.Request.Context(), instance.ID, userID, input)
@@ -357,6 +375,81 @@ func (a *App) HandleListTaskInstanceEvents(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"events": events})
+}
+
+func (a *App) HandleCreateTaskInstanceDependency(c *gin.Context) {
+	userID, err := middleware.GetClaims(c)
+	if err != nil {
+		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+
+	instance, ok := a.getAuthorizedTaskInstance(c)
+	if !ok {
+		return
+	}
+	if !canManageTaskInstance(instance, userID, currentUserIsAdmin(c)) {
+		writeError(c, http.StatusForbidden, "forbidden", nil)
+		return
+	}
+
+	var input models.CreateTaskInstanceDependency
+	if err := c.ShouldBindJSON(&input); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_json", nil)
+		return
+	}
+	if details := validateCreateTaskInstanceDependency(input); len(details) > 0 {
+		writeError(c, http.StatusBadRequest, "invalid_task_dependency", details)
+		return
+	}
+
+	dependsOnInstance, err := a.db.GetTaskInstance(c.Request.Context(), input.DependsOnTaskInstanceID)
+	if err != nil {
+		a.writeTaskDBError(c, "get_task_dependency_target", err)
+		return
+	}
+	if dependsOnInstance.BatchID != instance.BatchID {
+		writeError(c, http.StatusBadRequest, "invalid_task_dependency", map[string]string{"depends_on_task_instance_id": "dependency must be in the same batch"})
+		return
+	}
+
+	dependency, err := a.db.CreateTaskInstanceDependency(c.Request.Context(), instance.ID, userID, input)
+	if err != nil {
+		a.writeTaskDBError(c, "create_task_instance_dependency", err)
+		return
+	}
+
+	c.JSON(http.StatusCreated, dependency)
+}
+
+func (a *App) HandleListTaskInstanceDependencies(c *gin.Context) {
+	instance, ok := a.getAuthorizedTaskInstance(c)
+	if !ok {
+		return
+	}
+
+	dependencies, err := a.db.ListTaskInstanceDependencies(c.Request.Context(), instance.ID)
+	if err != nil {
+		a.writeTaskDBError(c, "list_task_instance_dependencies", err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"dependencies": dependencies})
+}
+
+func (a *App) HandleListTaskInstanceDependents(c *gin.Context) {
+	instance, ok := a.getAuthorizedTaskInstance(c)
+	if !ok {
+		return
+	}
+
+	dependents, err := a.db.ListTaskInstanceDependents(c.Request.Context(), instance.ID)
+	if err != nil {
+		a.writeTaskDBError(c, "list_task_instance_dependents", err)
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"dependents": dependents})
 }
 
 func (a *App) HandleCreateTaskComment(c *gin.Context) {
@@ -642,6 +735,10 @@ func (a *App) writeTaskDBError(c *gin.Context, handler string, err error) {
 		writeError(c, http.StatusNotFound, "not_found", nil)
 	case errors.Is(err, sqldb.ErrDBDuplicatedEntry):
 		writeError(c, http.StatusConflict, "duplicate_resource", nil)
+	case errors.Is(err, sqldb.ErrTaskDependencyCycle):
+		writeError(c, http.StatusConflict, "task_dependency_cycle", nil)
+	case errors.Is(err, sqldb.ErrTaskBlockedByDeps):
+		writeError(c, http.StatusConflict, "task_blocked_by_dependencies", nil)
 	case errors.Is(err, sqldb.ErrForeignKeyViolation):
 		writeError(c, http.StatusBadRequest, "invalid_reference", nil)
 	case errors.Is(err, sqldb.ErrCheckViolation), errors.Is(err, sqldb.ErrNotNullViolation):
@@ -683,6 +780,8 @@ func validateCreateTaskBatch(input models.CreateTaskBatch) map[string]string {
 	if len(input.Assignments) == 0 {
 		details["assignments"] = "at least one assignment is required"
 	}
+
+	assignmentKeys := map[string]bool{}
 	for index, assignment := range input.Assignments {
 		prefix := "assignments[" + strconv.Itoa(index) + "]."
 		if strings.TrimSpace(assignment.AssigneeID) == "" {
@@ -690,12 +789,47 @@ func validateCreateTaskBatch(input models.CreateTaskBatch) map[string]string {
 		}
 		if assignment.AssignmentKey != nil && strings.TrimSpace(*assignment.AssignmentKey) == "" {
 			details[prefix+"assignment_key"] = "assignment_key cannot be empty"
+		} else if assignment.AssignmentKey != nil {
+			if assignmentKeys[*assignment.AssignmentKey] {
+				details[prefix+"assignment_key"] = "assignment_key must be unique within the batch"
+			}
+			assignmentKeys[*assignment.AssignmentKey] = true
 		}
 		if assignment.Overrides != nil && assignment.Overrides.Title != nil && strings.TrimSpace(*assignment.Overrides.Title) == "" {
 			details[prefix+"overrides.title"] = "override title cannot be empty"
 		}
 	}
+	for index, dependency := range input.Dependencies {
+		prefix := "dependencies[" + strconv.Itoa(index) + "]."
+		if strings.TrimSpace(dependency.AssignmentKey) == "" {
+			details[prefix+"assignment_key"] = "assignment_key is required"
+		} else if !assignmentKeys[dependency.AssignmentKey] {
+			details[prefix+"assignment_key"] = "assignment_key must reference an assignment in this batch"
+		}
+		if strings.TrimSpace(dependency.DependsOnAssignmentKey) == "" {
+			details[prefix+"depends_on_assignment_key"] = "depends_on_assignment_key is required"
+		} else if !assignmentKeys[dependency.DependsOnAssignmentKey] {
+			details[prefix+"depends_on_assignment_key"] = "depends_on_assignment_key must reference an assignment in this batch"
+		}
+		if dependency.AssignmentKey == dependency.DependsOnAssignmentKey {
+			details[prefix+"depends_on_assignment_key"] = "task cannot depend on itself"
+		}
+		if dependency.DependencyType != nil && !models.IsValidTaskDependencyType(*dependency.DependencyType) {
+			details[prefix+"dependency_type"] = "dependency_type must be blocks_start or blocks_completion"
+		}
+	}
 
+	return details
+}
+
+func validateCreateTaskInstanceDependency(input models.CreateTaskInstanceDependency) map[string]string {
+	details := map[string]string{}
+	if strings.TrimSpace(input.DependsOnTaskInstanceID) == "" {
+		details["depends_on_task_instance_id"] = "depends_on_task_instance_id is required"
+	}
+	if input.DependencyType != nil && !models.IsValidTaskDependencyType(*input.DependencyType) {
+		details["dependency_type"] = "dependency_type must be blocks_start or blocks_completion"
+	}
 	return details
 }
 
@@ -767,5 +901,6 @@ func assigneeCanPatchInstance(input models.UpdateTaskInstance) bool {
 		input.Instructions == nil &&
 		input.Priority == nil &&
 		input.DueAt == nil &&
+		input.ReviewRequired == nil &&
 		(input.ProgressPercent != nil || input.CustomPayload != nil)
 }

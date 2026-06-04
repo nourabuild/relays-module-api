@@ -34,6 +34,8 @@ var (
 	ErrCheckViolation      = errors.New("check constraint violation")
 	ErrNotNullViolation    = errors.New("not null violation")
 	ErrTransactionFailed   = errors.New("transaction failed")
+	ErrTaskDependencyCycle = errors.New("task dependency cycle")
+	ErrTaskBlockedByDeps   = errors.New("task blocked by dependencies")
 )
 
 // Service represents a service that interacts with a database.
@@ -85,7 +87,11 @@ type Service interface {
 	ListTaskInstancesByAssignee(ctx context.Context, assigneeID string, filter models.TaskInstanceFilter) ([]models.TaskInstance, error)
 	UpdateTaskInstance(ctx context.Context, taskInstanceID, actorID string, input models.UpdateTaskInstance) (models.TaskInstance, error)
 	UpdateTaskInstanceStatus(ctx context.Context, taskInstanceID, actorID string, input models.UpdateTaskInstanceStatus) (models.TaskInstance, error)
+	SubmitTaskForReview(ctx context.Context, taskInstanceID, submittedBy string, input models.SubmitTaskReview) (models.TaskInstance, error)
 	ListTaskInstanceEvents(ctx context.Context, taskInstanceID string) ([]models.TaskInstanceEvent, error)
+	CreateTaskInstanceDependency(ctx context.Context, taskInstanceID, creatorID string, input models.CreateTaskInstanceDependency) (models.TaskInstanceDependency, error)
+	ListTaskInstanceDependencies(ctx context.Context, taskInstanceID string) ([]models.TaskInstanceDependency, error)
+	ListTaskInstanceDependents(ctx context.Context, taskInstanceID string) ([]models.TaskInstanceDependency, error)
 
 	// Task collaboration operations
 	CreateTaskComment(ctx context.Context, taskInstanceID, authorID string, input models.CreateTaskComment) (models.TaskComment, error)

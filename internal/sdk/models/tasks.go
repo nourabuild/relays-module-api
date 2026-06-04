@@ -3,13 +3,12 @@ package models
 import "time"
 
 const (
-	TaskStatusAssigned   = "assigned"
-	TaskStatusAccepted   = "accepted"
-	TaskStatusInProgress = "in_progress"
-	TaskStatusBlocked    = "blocked"
-	TaskStatusCompleted  = "completed"
-	TaskStatusRejected   = "rejected"
-	TaskStatusCancelled  = "cancelled"
+	TaskStatusAssigned      = "assigned"
+	TaskStatusInProgress    = "in_progress"
+	TaskStatusBlocked       = "blocked"
+	TaskStatusPendingReview = "pending_review"
+	TaskStatusCompleted     = "completed"
+	TaskStatusCancelled     = "cancelled"
 
 	AssignmentModeSameWork       = "same_work"
 	AssignmentModeCustomizedWork = "customized_work"
@@ -17,6 +16,9 @@ const (
 	AttachmentScopeTemplate = "template"
 	AttachmentScopeBatch    = "batch"
 	AttachmentScopeInstance = "instance"
+
+	DependencyTypeBlocksStart      = "blocks_start"
+	DependencyTypeBlocksCompletion = "blocks_completion"
 
 	SubmissionStatusSubmitted         = "submitted"
 	SubmissionStatusAccepted          = "accepted"
@@ -27,11 +29,10 @@ const (
 func IsValidTaskStatus(status string) bool {
 	switch status {
 	case TaskStatusAssigned,
-		TaskStatusAccepted,
 		TaskStatusInProgress,
 		TaskStatusBlocked,
+		TaskStatusPendingReview,
 		TaskStatusCompleted,
-		TaskStatusRejected,
 		TaskStatusCancelled:
 		return true
 	default:
@@ -51,6 +52,11 @@ func IsValidAttachmentScope(scope string) bool {
 	return scope == AttachmentScopeTemplate || scope == AttachmentScopeBatch || scope == AttachmentScopeInstance
 }
 
+func IsValidTaskDependencyType(dependencyType string) bool {
+	return dependencyType == DependencyTypeBlocksStart ||
+		dependencyType == DependencyTypeBlocksCompletion
+}
+
 func IsValidSubmissionReviewStatus(status string) bool {
 	return status == SubmissionStatusAccepted ||
 		status == SubmissionStatusRejected ||
@@ -65,6 +71,7 @@ type TaskTemplate struct {
 	Instructions    *string        `json:"instructions,omitempty"`
 	DefaultPriority *string        `json:"default_priority,omitempty"`
 	DefaultDueAt    *time.Time     `json:"default_due_at,omitempty"`
+	ReviewRequired  bool           `json:"review_required"`
 	Metadata        map[string]any `json:"metadata"`
 	CreatedAt       time.Time      `json:"created_at"`
 	UpdatedAt       time.Time      `json:"updated_at"`
@@ -77,6 +84,7 @@ type TaskTemplateInput struct {
 	Instructions    *string        `json:"instructions,omitempty"`
 	DefaultPriority *string        `json:"default_priority,omitempty"`
 	DefaultDueAt    *time.Time     `json:"default_due_at,omitempty"`
+	ReviewRequired  *bool          `json:"review_required,omitempty"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
 }
 
@@ -86,6 +94,7 @@ type UpdateTaskTemplate struct {
 	Instructions    *string        `json:"instructions,omitempty"`
 	DefaultPriority *string        `json:"default_priority,omitempty"`
 	DefaultDueAt    *time.Time     `json:"default_due_at,omitempty"`
+	ReviewRequired  *bool          `json:"review_required,omitempty"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
 }
 
@@ -110,6 +119,7 @@ type CreateTaskBatch struct {
 	IdempotencyKey *string               `json:"idempotency_key,omitempty"`
 	Metadata       map[string]any        `json:"metadata,omitempty"`
 	Assignments    []TaskAssignmentInput `json:"assignments"`
+	Dependencies   []TaskBatchDependency `json:"dependencies,omitempty"`
 }
 
 type TaskAssignmentInput struct {
@@ -120,18 +130,20 @@ type TaskAssignmentInput struct {
 }
 
 type TaskAssignmentOverrides struct {
-	Title        *string    `json:"title,omitempty"`
-	Description  *string    `json:"description,omitempty"`
-	Instructions *string    `json:"instructions,omitempty"`
-	Priority     *string    `json:"priority,omitempty"`
-	DueAt        *time.Time `json:"due_at,omitempty"`
+	Title          *string    `json:"title,omitempty"`
+	Description    *string    `json:"description,omitempty"`
+	Instructions   *string    `json:"instructions,omitempty"`
+	Priority       *string    `json:"priority,omitempty"`
+	DueAt          *time.Time `json:"due_at,omitempty"`
+	ReviewRequired *bool      `json:"review_required,omitempty"`
 }
 
 type TaskBatchCreateResult struct {
-	Batch          TaskBatch      `json:"batch"`
-	Template       TaskTemplate   `json:"template"`
-	Instances      []TaskInstance `json:"instances"`
-	TotalInstances int            `json:"total_instances"`
+	Batch          TaskBatch                `json:"batch"`
+	Template       TaskTemplate             `json:"template"`
+	Instances      []TaskInstance           `json:"instances"`
+	Dependencies   []TaskInstanceDependency `json:"dependencies,omitempty"`
+	TotalInstances int                      `json:"total_instances"`
 }
 
 type TaskInstance struct {
@@ -147,6 +159,7 @@ type TaskInstance struct {
 	Priority                 *string        `json:"priority,omitempty"`
 	DueAt                    *time.Time     `json:"due_at,omitempty"`
 	Status                   string         `json:"status"`
+	ReviewRequired           bool           `json:"review_required"`
 	ProgressPercent          int            `json:"progress_percent"`
 	StartedAt                *time.Time     `json:"started_at,omitempty"`
 	CompletedAt              *time.Time     `json:"completed_at,omitempty"`
@@ -172,6 +185,7 @@ type UpdateTaskInstance struct {
 	Instructions    *string        `json:"instructions,omitempty"`
 	Priority        *string        `json:"priority,omitempty"`
 	DueAt           *time.Time     `json:"due_at,omitempty"`
+	ReviewRequired  *bool          `json:"review_required,omitempty"`
 	ProgressPercent *int           `json:"progress_percent,omitempty"`
 	CustomPayload   map[string]any `json:"custom_payload,omitempty"`
 }
@@ -179,6 +193,10 @@ type UpdateTaskInstance struct {
 type UpdateTaskInstanceStatus struct {
 	Status         string  `json:"status"`
 	CompletionNote *string `json:"completion_note,omitempty"`
+}
+
+type SubmitTaskReview struct {
+	Note *string `json:"note,omitempty"`
 }
 
 type TaskBatchProgress struct {
@@ -199,6 +217,26 @@ type TaskInstanceEvent struct {
 	OldValue       map[string]any `json:"old_value,omitempty"`
 	NewValue       map[string]any `json:"new_value,omitempty"`
 	CreatedAt      time.Time      `json:"created_at"`
+}
+
+type TaskBatchDependency struct {
+	AssignmentKey          string  `json:"assignment_key"`
+	DependsOnAssignmentKey string  `json:"depends_on_assignment_key"`
+	DependencyType         *string `json:"dependency_type,omitempty"`
+}
+
+type TaskInstanceDependency struct {
+	ID                      string    `json:"id"`
+	TaskInstanceID          string    `json:"task_instance_id"`
+	DependsOnTaskInstanceID string    `json:"depends_on_task_instance_id"`
+	DependencyType          string    `json:"dependency_type"`
+	CreatedBy               string    `json:"created_by"`
+	CreatedAt               time.Time `json:"created_at"`
+}
+
+type CreateTaskInstanceDependency struct {
+	DependsOnTaskInstanceID string  `json:"depends_on_task_instance_id"`
+	DependencyType          *string `json:"dependency_type,omitempty"`
 }
 
 type TaskComment struct {
