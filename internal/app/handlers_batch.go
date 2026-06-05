@@ -57,7 +57,7 @@ func (a *App) HandleGetTaskBatchProgress(c *gin.Context) {
 		a.writeTaskDBError(c, "get_task_batch_progress", err)
 		return
 	}
-	if !canManageTaskBatch(progress.CreatedBy, userID, currentUserIsAdmin(c)) {
+	if !canManageTaskBatch(progress.CreatedBy, userID) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
@@ -78,6 +78,37 @@ func (a *App) HandleListTaskBatchInstances(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"instances": instances})
+}
+
+func (a *App) HandleAddTaskBatchInstance(c *gin.Context) {
+	batch, ok := a.getAuthorizedTaskBatch(c)
+	if !ok {
+		return
+	}
+
+	userID, err := middleware.GetClaims(c)
+	if err != nil {
+		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+
+	var input models.TaskAssignmentInput
+	if err := c.ShouldBindJSON(&input); err != nil {
+		writeError(c, http.StatusBadRequest, "invalid_json", nil)
+		return
+	}
+	if details := validateTaskAssignmentInput(input); len(details) > 0 {
+		writeError(c, http.StatusBadRequest, "invalid_task_assignment", details)
+		return
+	}
+
+	instance, err := a.db.AddTaskBatchInstance(c.Request.Context(), batch.ID, userID, input)
+	if err != nil {
+		a.writeTaskDBError(c, "add_task_batch_instance", err)
+		return
+	}
+
+	c.JSON(http.StatusCreated, instance)
 }
 
 func (a *App) HandleCreateTaskBatchComment(c *gin.Context) {
@@ -138,7 +169,7 @@ func (a *App) getAuthorizedTaskBatch(c *gin.Context) (models.TaskBatch, bool) {
 		a.writeTaskDBError(c, "get_task_batch", err)
 		return models.TaskBatch{}, false
 	}
-	if !canManageTaskBatch(batch.CreatedBy, userID, currentUserIsAdmin(c)) {
+	if !canManageTaskBatch(batch.CreatedBy, userID) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return models.TaskBatch{}, false
 	}
@@ -173,19 +204,14 @@ func validateCreateTaskBatch(input models.CreateTaskBatch) map[string]string {
 	assignmentKeys := map[string]bool{}
 	for index, assignment := range input.Assignments {
 		prefix := "assignments[" + strconv.Itoa(index) + "]."
-		if strings.TrimSpace(assignment.AssigneeID) == "" {
-			details[prefix+"assignee_id"] = "assignee_id is required"
+		for key, value := range validateTaskAssignmentInput(assignment) {
+			details[prefix+key] = value
 		}
-		if assignment.AssignmentKey != nil && strings.TrimSpace(*assignment.AssignmentKey) == "" {
-			details[prefix+"assignment_key"] = "assignment_key cannot be empty"
-		} else if assignment.AssignmentKey != nil {
+		if assignment.AssignmentKey != nil && strings.TrimSpace(*assignment.AssignmentKey) != "" {
 			if assignmentKeys[*assignment.AssignmentKey] {
 				details[prefix+"assignment_key"] = "assignment_key must be unique within the batch"
 			}
 			assignmentKeys[*assignment.AssignmentKey] = true
-		}
-		if assignment.Overrides != nil && assignment.Overrides.Title != nil && strings.TrimSpace(*assignment.Overrides.Title) == "" {
-			details[prefix+"overrides.title"] = "override title cannot be empty"
 		}
 	}
 	for index, dependency := range input.Dependencies {
@@ -211,6 +237,20 @@ func validateCreateTaskBatch(input models.CreateTaskBatch) map[string]string {
 	return details
 }
 
-func canManageTaskBatch(createdBy, userID string, isAdmin bool) bool {
-	return isAdmin || createdBy == userID
+func validateTaskAssignmentInput(input models.TaskAssignmentInput) map[string]string {
+	details := map[string]string{}
+	if strings.TrimSpace(input.AssigneeID) == "" {
+		details["assignee_id"] = "assignee_id is required"
+	}
+	if input.AssignmentKey != nil && strings.TrimSpace(*input.AssignmentKey) == "" {
+		details["assignment_key"] = "assignment_key cannot be empty"
+	}
+	if input.Overrides != nil && input.Overrides.Title != nil && strings.TrimSpace(*input.Overrides.Title) == "" {
+		details["overrides.title"] = "override title cannot be empty"
+	}
+	return details
+}
+
+func canManageTaskBatch(createdBy, userID string) bool {
+	return createdBy == userID
 }

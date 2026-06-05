@@ -55,7 +55,6 @@ type Service interface {
 	CreateUser(ctx context.Context, user models.NewUser) (models.User, error)
 	ListUsers(ctx context.Context) ([]models.User, error)
 	SearchUsers(ctx context.Context, query string) ([]models.User, error)
-	PromoteUserToAdmin(ctx context.Context, userID string) (models.User, error)
 
 	// Refresh token operations
 	CreateRefreshToken(ctx context.Context, token models.NewRefreshToken) (models.RefreshToken, error)
@@ -81,12 +80,14 @@ type Service interface {
 	GetTaskBatch(ctx context.Context, batchID string) (models.TaskBatch, error)
 	GetTaskBatchProgress(ctx context.Context, batchID string, includeInstances bool) (models.TaskBatchProgress, error)
 	ListTaskBatchInstances(ctx context.Context, batchID string) ([]models.TaskInstance, error)
+	AddTaskBatchInstance(ctx context.Context, batchID, creatorID string, assignment models.TaskAssignmentInput) (models.TaskInstance, error)
 
 	// Task instance operations
 	GetTaskInstance(ctx context.Context, taskInstanceID string) (models.TaskInstance, error)
 	ListTaskInstancesForUser(ctx context.Context, userID string, filter models.TaskInstanceFilter) ([]models.TaskInstance, error)
 	UpdateTaskInstance(ctx context.Context, taskInstanceID, actorID string, input models.UpdateTaskInstance) (models.TaskInstance, error)
 	UpdateTaskInstanceStatus(ctx context.Context, taskInstanceID, actorID string, input models.UpdateTaskInstanceStatus) (models.TaskInstance, error)
+	DeleteTaskInstance(ctx context.Context, taskInstanceID string) error
 	SubmitTaskForReview(ctx context.Context, taskInstanceID, submittedBy string, input models.SubmitTaskReview) (models.TaskInstance, error)
 	ListTaskInstanceEvents(ctx context.Context, taskInstanceID string) ([]models.TaskInstanceEvent, error)
 	CreateTaskInstanceDependency(ctx context.Context, taskInstanceID, creatorID string, input models.CreateTaskInstanceDependency) (models.TaskInstanceDependency, error)
@@ -408,27 +409,6 @@ func (s *service) SearchUsers(ctx context.Context, query string) ([]models.User,
 	}
 
 	return users, nil
-}
-
-// PromoteUserToAdmin sets the is_admin flag to true for a specific user.
-func (s *service) PromoteUserToAdmin(ctx context.Context, userID string) (models.User, error) {
-	const query = `
-		UPDATE todos.users
-		SET is_admin = true,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-		RETURNING id::text, name, account, email, bio, dob, city, phone, avatar_photo_id, is_admin, created_at, updated_at
-	`
-
-	user, err := scanUser(s.db.QueryRowContext(ctx, query, userID))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return models.User{}, ErrDBNotFound
-		}
-		return models.User{}, fmt.Errorf("promoting user to admin: %w", err)
-	}
-
-	return user, nil
 }
 
 // ---------------------------------------------

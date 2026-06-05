@@ -278,6 +278,42 @@ func (s *service) ListTaskBatchInstances(ctx context.Context, batchID string) ([
 	return listTaskBatchInstances(ctx, s.db, batchID)
 }
 
+func (s *service) AddTaskBatchInstance(ctx context.Context, batchID, creatorID string, assignment models.TaskAssignmentInput) (models.TaskInstance, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return models.TaskInstance{}, fmt.Errorf("beginning add task batch instance transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	batch, err := getTaskBatch(ctx, tx, batchID)
+	if err != nil {
+		return models.TaskInstance{}, err
+	}
+
+	template, err := getTaskTemplate(ctx, tx, batch.TemplateID)
+	if err != nil {
+		return models.TaskInstance{}, err
+	}
+
+	instance, err := createTaskInstanceForAssignment(ctx, tx, creatorID, template, batch, assignment)
+	if err != nil {
+		return models.TaskInstance{}, err
+	}
+
+	if err := createTaskInstanceEvent(ctx, tx, instance.ID, creatorID, "assigned", nil, map[string]any{
+		"assignee_id": instance.AssigneeID,
+		"status":      instance.Status,
+	}); err != nil {
+		return models.TaskInstance{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return models.TaskInstance{}, fmt.Errorf("committing add task batch instance transaction: %w", err)
+	}
+
+	return instance, nil
+}
+
 func (s *service) GetTaskInstance(ctx context.Context, taskInstanceID string) (models.TaskInstance, error) {
 	return getTaskInstance(ctx, s.db, taskInstanceID)
 }
@@ -481,6 +517,28 @@ func (s *service) UpdateTaskInstanceStatus(ctx context.Context, taskInstanceID, 
 	}
 
 	return updated, nil
+}
+
+func (s *service) DeleteTaskInstance(ctx context.Context, taskInstanceID string) error {
+	const query = `DELETE FROM todos.task_instances WHERE id = $1`
+
+	result, err := s.db.ExecContext(ctx, query, taskInstanceID)
+	if err != nil {
+		if isPgError(err, foreignKeyViolation) {
+			return ErrForeignKeyViolation
+		}
+		return fmt.Errorf("deleting task instance: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("checking deleted task instance rows: %w", err)
+	}
+	if rowsAffected == 0 {
+		return ErrDBNotFound
+	}
+
+	return nil
 }
 
 func (s *service) SubmitTaskForReview(ctx context.Context, taskInstanceID, submittedBy string, input models.SubmitTaskReview) (models.TaskInstance, error) {

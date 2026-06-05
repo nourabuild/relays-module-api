@@ -10,8 +10,7 @@ import (
 )
 
 const (
-	UserIDKey  = "user_id"
-	IsAdminKey = "is_admin"
+	UserIDKey = "user_id"
 )
 
 // Authenticate validates the Authorization header and attaches user context.
@@ -53,7 +52,6 @@ func Authenticate(jwtService *jwt.TokenService) gin.HandlerFunc {
 		}
 
 		c.Set(UserIDKey, claims.Subject)
-		c.Set(IsAdminKey, claims.IsAdmin)
 		c.Next()
 	}
 }

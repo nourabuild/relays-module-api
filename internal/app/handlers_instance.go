@@ -3,6 +3,7 @@ package app
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -66,8 +67,7 @@ func (a *App) HandleUpdateTaskInstance(c *gin.Context) {
 		return
 	}
 
-	isAdmin := currentUserIsAdmin(c)
-	if !canManageTaskInstance(instance, userID, isAdmin) && !(instance.AssigneeID == userID && assigneeCanPatchInstance(input)) {
+	if !canManageTaskInstance(instance, userID) && !(instance.AssigneeID == userID && assigneeCanPatchInstance(input)) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
@@ -107,8 +107,7 @@ func (a *App) HandleUpdateTaskInstanceStatus(c *gin.Context) {
 		return
 	}
 
-	isAdmin := currentUserIsAdmin(c)
-	canManage := canManageTaskInstance(instance, userID, isAdmin)
+	canManage := canManageTaskInstance(instance, userID)
 	isAssignee := instance.AssigneeID == userID
 
 	switch input.Status {
@@ -151,6 +150,46 @@ func (a *App) HandleUpdateTaskInstanceStatus(c *gin.Context) {
 	c.JSON(http.StatusOK, updated)
 }
 
+func (a *App) HandleDeleteTaskInstance(c *gin.Context) {
+	userID, err := middleware.GetClaims(c)
+	if err != nil {
+		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+
+	instance, err := a.db.GetTaskInstance(c.Request.Context(), c.Param("instance_id"))
+	if err != nil {
+		a.writeTaskDBError(c, "get_task_instance_for_delete", err)
+		return
+	}
+	if !canManageTaskInstance(instance, userID) {
+		writeError(c, http.StatusForbidden, "forbidden", nil)
+		return
+	}
+
+	// Hard delete (?purge=true) permanently erases the row and cascades its comments,
+	// events, attachments, and dependency edges — use it to reclaim storage. The default
+	// is a soft archive (status = cancelled) that preserves history and is recoverable.
+	purge, _ := strconv.ParseBool(c.DefaultQuery("purge", "false"))
+	if purge {
+		if err := a.db.DeleteTaskInstance(c.Request.Context(), instance.ID); err != nil {
+			a.writeTaskDBError(c, "delete_task_instance", err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+		return
+	}
+
+	if _, err := a.db.UpdateTaskInstanceStatus(c.Request.Context(), instance.ID, userID, models.UpdateTaskInstanceStatus{
+		Status: models.TaskStatusCancelled,
+	}); err != nil {
+		a.writeTaskDBError(c, "delete_task_instance", err)
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+
 func (a *App) HandleListTaskInstanceEvents(c *gin.Context) {
 	instance, ok := a.getAuthorizedTaskInstance(c)
 	if !ok {
@@ -177,7 +216,7 @@ func (a *App) HandleCreateTaskInstanceDependency(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !canManageTaskInstance(instance, userID, currentUserIsAdmin(c)) {
+	if !canManageTaskInstance(instance, userID) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
@@ -298,7 +337,7 @@ func (a *App) HandleCreateTaskSubmission(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if instance.AssigneeID != userID && !currentUserIsAdmin(c) {
+	if instance.AssigneeID != userID {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
@@ -355,7 +394,7 @@ func (a *App) HandleReviewTaskSubmission(c *gin.Context) {
 		writeError(c, http.StatusNotFound, "not_found", nil)
 		return
 	}
-	if !canManageTaskInstance(instance, userID, currentUserIsAdmin(c)) {
+	if !canManageTaskInstance(instance, userID) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
@@ -441,7 +480,7 @@ func (a *App) getAuthorizedTaskInstance(c *gin.Context) (models.TaskInstance, bo
 		a.writeTaskDBError(c, "get_task_instance", err)
 		return models.TaskInstance{}, false
 	}
-	if !canAccessTaskInstance(instance, userID, currentUserIsAdmin(c)) {
+	if !canAccessTaskInstance(instance, userID) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return models.TaskInstance{}, false
 	}
@@ -455,7 +494,6 @@ func (a *App) authorizeAttachmentScope(c *gin.Context, write bool) (string, stri
 		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
 		return "", "", false
 	}
-	isAdmin := currentUserIsAdmin(c)
 
 	if templateID := c.Param("template_id"); templateID != "" {
 		template, err := a.db.GetTaskTemplate(c.Request.Context(), templateID)
@@ -463,7 +501,7 @@ func (a *App) authorizeAttachmentScope(c *gin.Context, write bool) (string, stri
 			a.writeTaskDBError(c, "get_task_template_for_attachment", err)
 			return "", "", false
 		}
-		if !canManageTaskTemplate(template, userID, isAdmin) {
+		if !canManageTaskTemplate(template, userID) {
 			writeError(c, http.StatusForbidden, "forbidden", nil)
 			return "", "", false
 		}
@@ -476,7 +514,7 @@ func (a *App) authorizeAttachmentScope(c *gin.Context, write bool) (string, stri
 			a.writeTaskDBError(c, "get_task_batch_for_attachment", err)
 			return "", "", false
 		}
-		if !canManageTaskBatch(batch.CreatedBy, userID, isAdmin) {
+		if !canManageTaskBatch(batch.CreatedBy, userID) {
 			writeError(c, http.StatusForbidden, "forbidden", nil)
 			return "", "", false
 		}
@@ -489,12 +527,7 @@ func (a *App) authorizeAttachmentScope(c *gin.Context, write bool) (string, stri
 		a.writeTaskDBError(c, "get_task_instance_for_attachment", err)
 		return "", "", false
 	}
-	if write {
-		if !canAccessTaskInstance(instance, userID, isAdmin) {
-			writeError(c, http.StatusForbidden, "forbidden", nil)
-			return "", "", false
-		}
-	} else if !canAccessTaskInstance(instance, userID, isAdmin) {
+	if !canAccessTaskInstance(instance, userID) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return "", "", false
 	}
@@ -570,21 +603,12 @@ func parseTaskInstanceFilter(c *gin.Context) (models.TaskInstanceFilter, map[str
 	return filter, details
 }
 
-func currentUserIsAdmin(c *gin.Context) bool {
-	value, exists := c.Get(middleware.IsAdminKey)
-	if !exists {
-		return false
-	}
-	isAdmin, ok := value.(bool)
-	return ok && isAdmin
+func canAccessTaskInstance(instance models.TaskInstance, userID string) bool {
+	return instance.CreatedBy == userID || instance.AssigneeID == userID
 }
 
-func canAccessTaskInstance(instance models.TaskInstance, userID string, isAdmin bool) bool {
-	return isAdmin || instance.CreatedBy == userID || instance.AssigneeID == userID
-}
-
-func canManageTaskInstance(instance models.TaskInstance, userID string, isAdmin bool) bool {
-	return isAdmin || instance.CreatedBy == userID
+func canManageTaskInstance(instance models.TaskInstance, userID string) bool {
+	return instance.CreatedBy == userID
 }
 
 func assigneeCanPatchInstance(input models.UpdateTaskInstance) bool {

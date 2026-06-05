@@ -47,7 +47,7 @@ func (a *App) HandleGetTaskTemplate(c *gin.Context) {
 		a.writeTaskDBError(c, "get_task_template", err)
 		return
 	}
-	if !canManageTaskTemplate(template, userID, currentUserIsAdmin(c)) {
+	if !canManageTaskTemplate(template, userID) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
@@ -67,7 +67,7 @@ func (a *App) HandleUpdateTaskTemplate(c *gin.Context) {
 		a.writeTaskDBError(c, "get_task_template_for_update", err)
 		return
 	}
-	if !canManageTaskTemplate(template, userID, currentUserIsAdmin(c)) {
+	if !canManageTaskTemplate(template, userID) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
@@ -103,7 +103,7 @@ func (a *App) HandleArchiveTaskTemplate(c *gin.Context) {
 		a.writeTaskDBError(c, "get_task_template_for_archive", err)
 		return
 	}
-	if !canManageTaskTemplate(template, userID, currentUserIsAdmin(c)) {
+	if !canManageTaskTemplate(template, userID) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
@@ -124,6 +124,6 @@ func validateTaskTemplateInput(input models.TaskTemplateInput) map[string]string
 	return details
 }
 
-func canManageTaskTemplate(template models.TaskTemplate, userID string, isAdmin bool) bool {
-	return isAdmin || template.CreatedBy == userID
+func canManageTaskTemplate(template models.TaskTemplate, userID string) bool {
+	return template.CreatedBy == userID
 }
