@@ -278,6 +278,25 @@ func (s *service) ListTaskBatchInstances(ctx context.Context, batchID string) ([
 	return listTaskBatchInstances(ctx, s.db, batchID)
 }
 
+// IsTaskBatchAssignee reports whether the user is assigned to any task instance
+// within the batch. This drives the delegation chain: a participant who already
+// holds a task in the batch may append further tasks to it.
+func (s *service) IsTaskBatchAssignee(ctx context.Context, batchID, userID string) (bool, error) {
+	const query = `
+		SELECT EXISTS (
+			SELECT 1
+			FROM todos.task_instances
+			WHERE batch_id = $1 AND assignee_id = $2
+		)
+	`
+
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, query, batchID, userID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("checking task batch assignee: %w", err)
+	}
+	return exists, nil
+}
+
 func (s *service) AddTaskBatchInstance(ctx context.Context, batchID, creatorID string, assignment models.TaskAssignmentInput) (models.TaskInstance, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -372,11 +391,6 @@ func (s *service) UpdateTaskInstance(ctx context.Context, taskInstanceID, actorI
 		return models.TaskInstance{}, fmt.Errorf("encoding task instance custom payload: %w", err)
 	}
 
-	var progressParam any
-	if input.ProgressPercent != nil {
-		progressParam = *input.ProgressPercent
-	}
-
 	const query = `
 		UPDATE todos.task_instances
 		SET title = COALESCE($2, title),
@@ -385,8 +399,7 @@ func (s *service) UpdateTaskInstance(ctx context.Context, taskInstanceID, actorI
 		    priority = COALESCE($5, priority),
 		    due_at = COALESCE($6, due_at),
 		    review_required = COALESCE($7, review_required),
-		    progress_percent = COALESCE($8, progress_percent),
-		    custom_payload = COALESCE($9::jsonb, custom_payload),
+		    custom_payload = COALESCE($8::jsonb, custom_payload),
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
 		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
@@ -405,7 +418,6 @@ func (s *service) UpdateTaskInstance(ctx context.Context, taskInstanceID, actorI
 		NullString(input.Priority),
 		NullTime(input.DueAt),
 		NullBool(input.ReviewRequired),
-		progressParam,
 		customPayloadJSON,
 	))
 	if err != nil {
@@ -468,10 +480,7 @@ func (s *service) UpdateTaskInstanceStatus(ctx context.Context, taskInstanceID, 
 		        WHEN $2 <> 'cancelled' THEN NULL
 		        ELSE cancelled_at
 		    END,
-		    progress_percent = CASE
-		        WHEN $2 = 'completed' THEN 100
-		        ELSE progress_percent
-		    END,
+		    progress_percent = $4,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
 		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
@@ -486,6 +495,7 @@ func (s *service) UpdateTaskInstanceStatus(ctx context.Context, taskInstanceID, 
 		taskInstanceID,
 		input.Status,
 		NullString(input.CompletionNote),
+		models.ProgressForStatus(input.Status),
 	))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1648,6 +1658,7 @@ func setTaskInstancePendingReview(ctx context.Context, runner sqlRunner, taskIns
 		    started_at = COALESCE(started_at, CURRENT_TIMESTAMP),
 		    completed_at = NULL,
 		    cancelled_at = NULL,
+		    progress_percent = $3,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
 		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
@@ -1658,7 +1669,7 @@ func setTaskInstancePendingReview(ctx context.Context, runner sqlRunner, taskIns
 		          created_at, updated_at
 	`
 
-	instance, err := scanTaskInstance(runner.QueryRowContext(ctx, query, taskInstanceID, NullString(note)))
+	instance, err := scanTaskInstance(runner.QueryRowContext(ctx, query, taskInstanceID, NullString(note), models.ProgressForStatus(models.TaskStatusPendingReview)))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.TaskInstance{}, ErrDBNotFound
@@ -1694,10 +1705,7 @@ func applyTaskSubmissionReviewToTaskInstance(ctx context.Context, runner sqlRunn
 		        ELSE NULL
 		    END,
 		    cancelled_at = NULL,
-		    progress_percent = CASE
-		        WHEN $2 = 'completed' THEN 100
-		        ELSE progress_percent
-		    END,
+		    progress_percent = $4,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
 		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
@@ -1708,7 +1716,7 @@ func applyTaskSubmissionReviewToTaskInstance(ctx context.Context, runner sqlRunn
 		          created_at, updated_at
 	`
 
-	updated, err := scanTaskInstance(runner.QueryRowContext(ctx, query, instance.ID, status, NullString(submission.Note)))
+	updated, err := scanTaskInstance(runner.QueryRowContext(ctx, query, instance.ID, status, NullString(submission.Note), models.ProgressForStatus(status)))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.TaskInstance{}, ErrDBNotFound
@@ -1832,9 +1840,6 @@ func taskInstanceUpdateEventValue(instance models.TaskInstance, input models.Upd
 	}
 	if input.ReviewRequired != nil {
 		value["review_required"] = instance.ReviewRequired
-	}
-	if input.ProgressPercent != nil {
-		value["progress_percent"] = instance.ProgressPercent
 	}
 	if input.CustomPayload != nil {
 		value["custom_payload"] = instance.CustomPayload

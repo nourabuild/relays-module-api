@@ -80,6 +80,7 @@ type Service interface {
 	GetTaskBatch(ctx context.Context, batchID string) (models.TaskBatch, error)
 	GetTaskBatchProgress(ctx context.Context, batchID string, includeInstances bool) (models.TaskBatchProgress, error)
 	ListTaskBatchInstances(ctx context.Context, batchID string) ([]models.TaskInstance, error)
+	IsTaskBatchAssignee(ctx context.Context, batchID, userID string) (bool, error)
 	AddTaskBatchInstance(ctx context.Context, batchID, creatorID string, assignment models.TaskAssignmentInput) (models.TaskInstance, error)
 
 	// Task instance operations

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"net/http"
 	"strconv"
 	"strings"
@@ -81,14 +82,25 @@ func (a *App) HandleListTaskBatchInstances(c *gin.Context) {
 }
 
 func (a *App) HandleAddTaskBatchInstance(c *gin.Context) {
-	batch, ok := a.getAuthorizedTaskBatch(c)
-	if !ok {
-		return
-	}
-
 	userID, err := middleware.GetClaims(c)
 	if err != nil {
 		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+
+	batch, err := a.db.GetTaskBatch(c.Request.Context(), c.Param("batch_id"))
+	if err != nil {
+		a.writeTaskDBError(c, "get_task_batch", err)
+		return
+	}
+
+	canAppend, err := a.canAppendToTaskBatch(c.Request.Context(), batch, userID)
+	if err != nil {
+		a.writeTaskDBError(c, "check_task_batch_assignee", err)
+		return
+	}
+	if !canAppend {
+		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
 
@@ -253,4 +265,16 @@ func validateTaskAssignmentInput(input models.TaskAssignmentInput) map[string]st
 
 func canManageTaskBatch(createdBy, userID string) bool {
 	return createdBy == userID
+}
+
+// canAppendToTaskBatch decides who may add a task to an existing batch. The
+// batch creator always may; so may anyone already assigned a task within the
+// batch, which is what lets a delegation chain continue (A assigns B, B appends
+// a task for C, C may then append for D, and so on). The assignee lookup only
+// runs when the cheaper creator check fails.
+func (a *App) canAppendToTaskBatch(ctx context.Context, batch models.TaskBatch, userID string) (bool, error) {
+	if canManageTaskBatch(batch.CreatedBy, userID) {
+		return true, nil
+	}
+	return a.db.IsTaskBatchAssignee(ctx, batch.ID, userID)
 }

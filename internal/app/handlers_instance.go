@@ -571,9 +571,6 @@ func validateUpdateTaskInstance(input models.UpdateTaskInstance) map[string]stri
 	if input.Title != nil && strings.TrimSpace(*input.Title) == "" {
 		details["title"] = "title cannot be empty"
 	}
-	if input.ProgressPercent != nil && (*input.ProgressPercent < 0 || *input.ProgressPercent > 100) {
-		details["progress_percent"] = "progress_percent must be between 0 and 100"
-	}
 	return details
 }
 
@@ -618,5 +615,5 @@ func assigneeCanPatchInstance(input models.UpdateTaskInstance) bool {
 		input.Priority == nil &&
 		input.DueAt == nil &&
 		input.ReviewRequired == nil &&
-		(input.ProgressPercent != nil || input.CustomPayload != nil)
+		input.CustomPayload != nil
 }

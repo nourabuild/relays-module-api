@@ -44,6 +44,18 @@ func IsTerminalTaskStatus(status string) bool {
 	return status == TaskStatusCompleted || status == TaskStatusCancelled
 }
 
+// ProgressForStatus derives a task instance's progress percentage purely from
+// its status. Progress measures completion only: a task is 100% once completed
+// and 0% in every other state — being "in progress" is still 0% complete. This
+// is the single source of truth for the mapping; every code path that writes a
+// status should set progress from this function.
+func ProgressForStatus(status string) int {
+	if status == TaskStatusCompleted {
+		return 100
+	}
+	return 0
+}
+
 func IsValidAssignmentMode(mode string) bool {
 	return mode == AssignmentModeSameWork || mode == AssignmentModeCustomizedWork
 }
@@ -186,7 +198,6 @@ type UpdateTaskInstance struct {
 	Priority        *string        `json:"priority,omitempty"`
 	DueAt           *time.Time     `json:"due_at,omitempty"`
 	ReviewRequired  *bool          `json:"review_required,omitempty"`
-	ProgressPercent *int           `json:"progress_percent,omitempty"`
 	CustomPayload   map[string]any `json:"custom_payload,omitempty"`
 }
 
