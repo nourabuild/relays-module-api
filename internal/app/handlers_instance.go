@@ -212,11 +212,23 @@ func (a *App) HandleCreateTaskInstanceDependency(c *gin.Context) {
 		return
 	}
 
-	instance, ok := a.getAuthorizedTaskInstance(c)
-	if !ok {
+	instance, err := a.db.GetTaskInstance(c.Request.Context(), c.Param("instance_id"))
+	if err != nil {
+		a.writeTaskDBError(c, "get_task_instance", err)
 		return
 	}
-	if !canManageTaskInstance(instance, userID) {
+
+	batch, err := a.db.GetTaskBatch(c.Request.Context(), instance.BatchID)
+	if err != nil {
+		a.writeTaskDBError(c, "get_task_batch", err)
+		return
+	}
+	canParticipate, err := a.canParticipateInTaskBatch(c.Request.Context(), batch, userID)
+	if err != nil {
+		a.writeTaskDBError(c, "check_task_batch_assignee", err)
+		return
+	}
+	if !canParticipate {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}

@@ -94,12 +94,12 @@ func (a *App) HandleAddTaskBatchInstance(c *gin.Context) {
 		return
 	}
 
-	canAppend, err := a.canAppendToTaskBatch(c.Request.Context(), batch, userID)
+	canParticipate, err := a.canParticipateInTaskBatch(c.Request.Context(), batch, userID)
 	if err != nil {
 		a.writeTaskDBError(c, "check_task_batch_assignee", err)
 		return
 	}
-	if !canAppend {
+	if !canParticipate {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
@@ -181,7 +181,12 @@ func (a *App) getAuthorizedTaskBatch(c *gin.Context) (models.TaskBatch, bool) {
 		a.writeTaskDBError(c, "get_task_batch", err)
 		return models.TaskBatch{}, false
 	}
-	if !canManageTaskBatch(batch.CreatedBy, userID) {
+	canParticipate, err := a.canParticipateInTaskBatch(c.Request.Context(), batch, userID)
+	if err != nil {
+		a.writeTaskDBError(c, "check_task_batch_assignee", err)
+		return models.TaskBatch{}, false
+	}
+	if !canParticipate {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return models.TaskBatch{}, false
 	}
@@ -267,12 +272,13 @@ func canManageTaskBatch(createdBy, userID string) bool {
 	return createdBy == userID
 }
 
-// canAppendToTaskBatch decides who may add a task to an existing batch. The
-// batch creator always may; so may anyone already assigned a task within the
-// batch, which is what lets a delegation chain continue (A assigns B, B appends
-// a task for C, C may then append for D, and so on). The assignee lookup only
-// runs when the cheaper creator check fails.
-func (a *App) canAppendToTaskBatch(ctx context.Context, batch models.TaskBatch, userID string) (bool, error) {
+// canParticipateInTaskBatch decides who may act within an existing batch: read
+// it, append a task to it, or wire dependencies between its instances. The batch
+// creator always may; so may anyone already assigned a task within the batch,
+// which is what lets a delegation chain continue (A assigns B, B appends a task
+// for C, C may then append for D, and so on). The assignee lookup only runs when
+// the cheaper creator check fails.
+func (a *App) canParticipateInTaskBatch(ctx context.Context, batch models.TaskBatch, userID string) (bool, error) {
 	if canManageTaskBatch(batch.CreatedBy, userID) {
 		return true, nil
 	}
