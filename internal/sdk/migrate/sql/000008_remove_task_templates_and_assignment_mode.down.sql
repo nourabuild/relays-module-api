@@ -20,7 +20,7 @@ ALTER TABLE todos.task_batches
 CREATE TEMP TABLE task_batch_template_restore (
     batch_id UUID PRIMARY KEY,
     template_id UUID NOT NULL
-) ON COMMIT DROP;
+);
 
 INSERT INTO task_batch_template_restore (batch_id, template_id)
 SELECT id, gen_random_uuid()
@@ -104,3 +104,11 @@ CREATE INDEX IF NOT EXISTS idx_task_batches_template
 
 CREATE INDEX IF NOT EXISTS idx_task_attachments_template
     ON todos.task_attachments(template_id);
+
+ALTER TABLE todos.task_batches
+    DROP COLUMN IF EXISTS instructions,
+    DROP COLUMN IF EXISTS priority,
+    DROP COLUMN IF EXISTS due_at,
+    DROP COLUMN IF EXISTS review_required;
+
+DROP TABLE IF EXISTS task_batch_template_restore;
