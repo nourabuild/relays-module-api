@@ -214,9 +214,6 @@ func validateCreateTaskBatch(input models.CreateTaskBatch) map[string]string {
 	if input.AssignmentMode != nil && !models.IsValidAssignmentMode(*input.AssignmentMode) {
 		details["assignment_mode"] = "assignment_mode must be same_work or customized_work"
 	}
-	if len(input.Assignments) == 0 {
-		details["assignments"] = "at least one assignment is required"
-	}
 
 	assignmentKeys := map[string]bool{}
 	for index, assignment := range input.Assignments {

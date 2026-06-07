@@ -120,6 +120,8 @@ func (s *service) CreateTaskBatch(ctx context.Context, creatorID string, input m
 		}
 	}
 
+	assignments := withCreatorAssignment(creatorID, input.Assignments)
+
 	var template models.TaskTemplate
 	if input.TemplateID != nil {
 		template, err = getTaskTemplateForCreator(ctx, tx, *input.TemplateID, creatorID)
@@ -139,7 +141,7 @@ func (s *service) CreateTaskBatch(ctx context.Context, creatorID string, input m
 	assignmentMode := models.AssignmentModeSameWork
 	if input.AssignmentMode != nil {
 		assignmentMode = *input.AssignmentMode
-	} else if hasAssignmentOverrides(input.Assignments) {
+	} else if hasAssignmentOverrides(assignments) {
 		assignmentMode = models.AssignmentModeCustomizedWork
 	}
 
@@ -185,9 +187,9 @@ func (s *service) CreateTaskBatch(ctx context.Context, creatorID string, input m
 		return models.TaskBatchCreateResult{}, fmt.Errorf("creating task batch: %w", err)
 	}
 
-	instances := make([]models.TaskInstance, 0, len(input.Assignments))
-	instancesByAssignmentKey := make(map[string]models.TaskInstance, len(input.Assignments))
-	for _, assignment := range input.Assignments {
+	instances := make([]models.TaskInstance, 0, len(assignments))
+	instancesByAssignmentKey := make(map[string]models.TaskInstance, len(assignments))
+	for _, assignment := range assignments {
 		instance, err := createTaskInstanceForAssignment(ctx, tx, creatorID, template, batch, assignment)
 		if err != nil {
 			return models.TaskBatchCreateResult{}, err
@@ -209,21 +211,31 @@ func (s *service) CreateTaskBatch(ctx context.Context, creatorID string, input m
 		return models.TaskBatchCreateResult{}, err
 	}
 
-	if err := tx.Commit(); err != nil {
-		return models.TaskBatchCreateResult{}, fmt.Errorf("committing task batch transaction: %w", err)
-	}
-
-	return models.TaskBatchCreateResult{
+	result := models.TaskBatchCreateResult{
 		Batch:          batch,
 		Template:       template,
 		Instances:      instances,
 		Dependencies:   dependencies,
 		TotalInstances: len(instances),
-	}, nil
+	}
+	result, err = populateTaskBatchCreateResultAssignees(ctx, tx, result)
+	if err != nil {
+		return models.TaskBatchCreateResult{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return models.TaskBatchCreateResult{}, fmt.Errorf("committing task batch transaction: %w", err)
+	}
+
+	return result, nil
 }
 
 func (s *service) GetTaskBatch(ctx context.Context, batchID string) (models.TaskBatch, error) {
-	return getTaskBatch(ctx, s.db, batchID)
+	batch, err := getTaskBatch(ctx, s.db, batchID)
+	if err != nil {
+		return models.TaskBatch{}, err
+	}
+	return populateTaskBatchAssignees(ctx, s.db, batch)
 }
 
 func (s *service) GetTaskBatchProgress(ctx context.Context, batchID string, includeInstances bool) (models.TaskBatchProgress, error) {
@@ -240,6 +252,12 @@ func buildTaskBatchProgress(ctx context.Context, runner sqlRunner, batch models.
 	if err != nil {
 		return models.TaskBatchProgress{}, err
 	}
+
+	assignees, err := listTaskBatchAssignees(ctx, runner, batch.ID)
+	if err != nil {
+		return models.TaskBatchProgress{}, err
+	}
+	instances = applyAssigneesToTaskInstances(instances, assignees)
 
 	summary := map[string]int{
 		"assigned":       0,
@@ -266,6 +284,7 @@ func buildTaskBatchProgress(ctx context.Context, runner sqlRunner, batch models.
 		Total:         len(instances),
 		Summary:       summary,
 		DerivedStatus: deriveBatchStatus(len(instances), summary),
+		Assignees:     assignees,
 	}
 	if includeInstances {
 		progress.Instances = instances
@@ -275,7 +294,11 @@ func buildTaskBatchProgress(ctx context.Context, runner sqlRunner, batch models.
 }
 
 func (s *service) ListTaskBatchInstances(ctx context.Context, batchID string) ([]models.TaskInstance, error) {
-	return listTaskBatchInstances(ctx, s.db, batchID)
+	instances, err := listTaskBatchInstances(ctx, s.db, batchID)
+	if err != nil {
+		return nil, err
+	}
+	return populateTaskInstancesAssignees(ctx, s.db, instances)
 }
 
 // IsTaskBatchAssignee reports whether the user is assigned to any task instance
@@ -326,6 +349,11 @@ func (s *service) AddTaskBatchInstance(ctx context.Context, batchID, creatorID s
 		return models.TaskInstance{}, err
 	}
 
+	instance, err = populateTaskInstanceAssignees(ctx, tx, instance)
+	if err != nil {
+		return models.TaskInstance{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return models.TaskInstance{}, fmt.Errorf("committing add task batch instance transaction: %w", err)
 	}
@@ -334,7 +362,11 @@ func (s *service) AddTaskBatchInstance(ctx context.Context, batchID, creatorID s
 }
 
 func (s *service) GetTaskInstance(ctx context.Context, taskInstanceID string) (models.TaskInstance, error) {
-	return getTaskInstance(ctx, s.db, taskInstanceID)
+	instance, err := getTaskInstance(ctx, s.db, taskInstanceID)
+	if err != nil {
+		return models.TaskInstance{}, err
+	}
+	return populateTaskInstanceAssignees(ctx, s.db, instance)
 }
 
 func (s *service) ListTaskInstancesForUser(ctx context.Context, userID string, filter models.TaskInstanceFilter) ([]models.TaskInstance, error) {
@@ -371,7 +403,11 @@ func (s *service) ListTaskInstancesForUser(ctx context.Context, userID string, f
 	}
 	defer rows.Close()
 
-	return scanTaskInstances(rows)
+	instances, err := scanTaskInstances(rows)
+	if err != nil {
+		return nil, err
+	}
+	return populateTaskInstancesAssignees(ctx, s.db, instances)
 }
 
 func (s *service) UpdateTaskInstance(ctx context.Context, taskInstanceID, actorID string, input models.UpdateTaskInstance) (models.TaskInstance, error) {
@@ -435,6 +471,11 @@ func (s *service) UpdateTaskInstance(ctx context.Context, taskInstanceID, actorI
 		eventType = "due_date_changed"
 	}
 	if err := createTaskInstanceEvent(ctx, tx, updated.ID, actorID, eventType, taskInstanceUpdateEventValue(oldInstance, input), taskInstanceUpdateEventValue(updated, input)); err != nil {
+		return models.TaskInstance{}, err
+	}
+
+	updated, err = populateTaskInstanceAssignees(ctx, tx, updated)
+	if err != nil {
 		return models.TaskInstance{}, err
 	}
 
@@ -522,6 +563,11 @@ func (s *service) UpdateTaskInstanceStatus(ctx context.Context, taskInstanceID, 
 		return models.TaskInstance{}, err
 	}
 
+	updated, err = populateTaskInstanceAssignees(ctx, tx, updated)
+	if err != nil {
+		return models.TaskInstance{}, err
+	}
+
 	if err := tx.Commit(); err != nil {
 		return models.TaskInstance{}, fmt.Errorf("committing task status transaction: %w", err)
 	}
@@ -595,6 +641,11 @@ func (s *service) SubmitTaskForReview(ctx context.Context, taskInstanceID, submi
 		"submission_id": submission.ID,
 		"status":        submission.Status,
 	}); err != nil {
+		return models.TaskInstance{}, err
+	}
+
+	updated, err = populateTaskInstanceAssignees(ctx, tx, updated)
+	if err != nil {
 		return models.TaskInstance{}, err
 	}
 
@@ -1189,13 +1240,14 @@ func getTaskBatchCreateResult(ctx context.Context, runner sqlRunner, batchID str
 		return models.TaskBatchCreateResult{}, err
 	}
 
-	return models.TaskBatchCreateResult{
+	result := models.TaskBatchCreateResult{
 		Batch:          batch,
 		Template:       template,
 		Instances:      instances,
 		Dependencies:   dependencies,
 		TotalInstances: len(instances),
-	}, nil
+	}
+	return populateTaskBatchCreateResultAssignees(ctx, runner, result)
 }
 
 func getTaskBatch(ctx context.Context, runner sqlRunner, batchID string) (models.TaskBatch, error) {
@@ -1329,6 +1381,137 @@ func listTaskBatchInstances(ctx context.Context, runner sqlRunner, batchID strin
 	defer rows.Close()
 
 	return scanTaskInstances(rows)
+}
+
+func populateTaskBatchCreateResultAssignees(ctx context.Context, runner sqlRunner, result models.TaskBatchCreateResult) (models.TaskBatchCreateResult, error) {
+	assignees, err := listTaskBatchAssignees(ctx, runner, result.Batch.ID)
+	if err != nil {
+		return models.TaskBatchCreateResult{}, err
+	}
+
+	result.Batch.Assignees = assignees
+	result.Instances = applyAssigneesToTaskInstances(result.Instances, assignees)
+
+	return result, nil
+}
+
+func populateTaskBatchAssignees(ctx context.Context, runner sqlRunner, batch models.TaskBatch) (models.TaskBatch, error) {
+	assignees, err := listTaskBatchAssignees(ctx, runner, batch.ID)
+	if err != nil {
+		return models.TaskBatch{}, err
+	}
+
+	batch.Assignees = assignees
+	return batch, nil
+}
+
+func populateTaskInstanceAssignees(ctx context.Context, runner sqlRunner, instance models.TaskInstance) (models.TaskInstance, error) {
+	assignees, err := listTaskBatchAssignees(ctx, runner, instance.BatchID)
+	if err != nil {
+		return models.TaskInstance{}, err
+	}
+
+	instance.Assignees = assignees
+	return instance, nil
+}
+
+func populateTaskInstancesAssignees(ctx context.Context, runner sqlRunner, instances []models.TaskInstance) ([]models.TaskInstance, error) {
+	if len(instances) == 0 {
+		return instances, nil
+	}
+
+	batchIDs := make([]string, 0, len(instances))
+	seenBatchIDs := make(map[string]struct{}, len(instances))
+	for _, instance := range instances {
+		if _, seen := seenBatchIDs[instance.BatchID]; seen {
+			continue
+		}
+		seenBatchIDs[instance.BatchID] = struct{}{}
+		batchIDs = append(batchIDs, instance.BatchID)
+	}
+
+	assigneesByBatchID, err := listTaskAssigneesByBatchIDs(ctx, runner, batchIDs)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range instances {
+		assignees := assigneesByBatchID[instances[i].BatchID]
+		if assignees == nil {
+			assignees = []models.TaskAssignee{}
+		}
+		instances[i].Assignees = assignees
+	}
+
+	return instances, nil
+}
+
+func applyAssigneesToTaskInstances(instances []models.TaskInstance, assignees []models.TaskAssignee) []models.TaskInstance {
+	if assignees == nil {
+		assignees = []models.TaskAssignee{}
+	}
+	for i := range instances {
+		instances[i].Assignees = assignees
+	}
+	return instances
+}
+
+func listTaskBatchAssignees(ctx context.Context, runner sqlRunner, batchID string) ([]models.TaskAssignee, error) {
+	assigneesByBatchID, err := listTaskAssigneesByBatchIDs(ctx, runner, []string{batchID})
+	if err != nil {
+		return nil, err
+	}
+
+	assignees := assigneesByBatchID[batchID]
+	if assignees == nil {
+		return []models.TaskAssignee{}, nil
+	}
+	return assignees, nil
+}
+
+func listTaskAssigneesByBatchIDs(ctx context.Context, runner sqlRunner, batchIDs []string) (map[string][]models.TaskAssignee, error) {
+	assigneesByBatchID := make(map[string][]models.TaskAssignee, len(batchIDs))
+	if len(batchIDs) == 0 {
+		return assigneesByBatchID, nil
+	}
+
+	placeholders := make([]string, 0, len(batchIDs))
+	args := make([]any, 0, len(batchIDs))
+	for i, batchID := range batchIDs {
+		placeholders = append(placeholders, fmt.Sprintf("$%d", i+1))
+		args = append(args, batchID)
+		assigneesByBatchID[batchID] = []models.TaskAssignee{}
+	}
+
+	query := `
+		SELECT ti.id::text, ti.batch_id::text, ti.assignee_id, ti.assignment_key, ti.status,
+		       u.id::text, u.name, u.account, u.email, u.bio, u.dob, u.city, u.phone,
+		       u.avatar_photo_id, u.is_admin, u.created_at, u.updated_at,
+		       ti.created_at, ti.updated_at
+		FROM todos.task_instances ti
+		JOIN todos.users u ON u.id = ti.assignee_id
+		WHERE ti.batch_id::text IN (` + strings.Join(placeholders, ", ") + `)
+		ORDER BY ti.batch_id::text, ti.created_at ASC
+	`
+
+	rows, err := runner.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("listing task assignees: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		assignee, err := scanTaskAssignee(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scanning task assignee: %w", err)
+		}
+		assigneesByBatchID[assignee.BatchID] = append(assigneesByBatchID[assignee.BatchID], assignee)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating task assignees: %w", err)
+	}
+
+	return assigneesByBatchID, nil
 }
 
 func createTaskBatchDependencies(ctx context.Context, runner sqlRunner, creatorID string, inputs []models.TaskBatchDependency, instancesByAssignmentKey map[string]models.TaskInstance) ([]models.TaskInstanceDependency, error) {
@@ -1783,6 +1966,19 @@ func hasAssignmentOverrides(assignments []models.TaskAssignmentInput) bool {
 	return false
 }
 
+func withCreatorAssignment(creatorID string, assignments []models.TaskAssignmentInput) []models.TaskAssignmentInput {
+	for _, assignment := range assignments {
+		if assignment.AssigneeID == creatorID {
+			return assignments
+		}
+	}
+
+	normalized := make([]models.TaskAssignmentInput, 0, len(assignments)+1)
+	normalized = append(normalized, models.TaskAssignmentInput{AssigneeID: creatorID})
+	normalized = append(normalized, assignments...)
+	return normalized
+}
+
 func deriveBatchStatus(total int, summary map[string]int) string {
 	if total == 0 {
 		return "empty"
@@ -1913,6 +2109,7 @@ func scanTaskBatch(scanner rowScanner) (models.TaskBatch, error) {
 	batch.Description = StringPtr(description)
 	batch.IdempotencyKey = StringPtr(idempotencyKey)
 	batch.Metadata = metadataMap
+	batch.Assignees = []models.TaskAssignee{}
 
 	return batch, nil
 }
@@ -1976,6 +2173,7 @@ func scanTaskInstance(scanner rowScanner) (models.TaskInstance, error) {
 	instance.CustomPayload = customPayloadMap
 	instance.ReplacedByTaskInstanceID = StringPtr(replacedByTaskInstanceID)
 	instance.ReplacesTaskInstanceID = StringPtr(replacesTaskInstanceID)
+	instance.Assignees = []models.TaskAssignee{}
 
 	return instance, nil
 }
@@ -1993,6 +2191,50 @@ func scanTaskInstances(rows *sql.Rows) ([]models.TaskInstance, error) {
 		return nil, fmt.Errorf("iterating task instances: %w", err)
 	}
 	return instances, nil
+}
+
+func scanTaskAssignee(scanner rowScanner) (models.TaskAssignee, error) {
+	var assignee models.TaskAssignee
+	var user models.User
+	var assignmentKey sql.NullString
+	var bio, dob, city, phone sql.NullString
+	var avatarPhotoID sql.NullInt32
+
+	if err := scanner.Scan(
+		&assignee.ID,
+		&assignee.BatchID,
+		&assignee.UserID,
+		&assignmentKey,
+		&assignee.Status,
+		&user.ID,
+		&user.Name,
+		&user.Account,
+		&user.Email,
+		&bio,
+		&dob,
+		&city,
+		&phone,
+		&avatarPhotoID,
+		&user.IsAdmin,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+		&assignee.CreatedAt,
+		&assignee.UpdatedAt,
+	); err != nil {
+		return models.TaskAssignee{}, err
+	}
+
+	user.Bio = StringPtr(bio)
+	user.DOB = StringPtr(dob)
+	user.City = StringPtr(city)
+	user.Phone = StringPtr(phone)
+	user.AvatarPhotoID = Int32Ptr(avatarPhotoID)
+
+	assignee.TaskInstanceID = assignee.ID
+	assignee.AssignmentKey = StringPtr(assignmentKey)
+	assignee.User = &user
+
+	return assignee, nil
 }
 
 func scanTaskInstanceEvent(scanner rowScanner) (models.TaskInstanceEvent, error) {

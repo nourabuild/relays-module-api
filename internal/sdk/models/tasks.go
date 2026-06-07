@@ -119,6 +119,7 @@ type TaskBatch struct {
 	AssignmentMode string         `json:"assignment_mode"`
 	IdempotencyKey *string        `json:"idempotency_key,omitempty"`
 	Metadata       map[string]any `json:"metadata"`
+	Assignees      []TaskAssignee `json:"assignees"`
 	CreatedAt      time.Time      `json:"created_at"`
 }
 
@@ -139,6 +140,18 @@ type TaskAssignmentInput struct {
 	AssignmentKey *string                  `json:"assignment_key,omitempty"`
 	Overrides     *TaskAssignmentOverrides `json:"overrides,omitempty"`
 	CustomPayload map[string]any           `json:"custom_payload,omitempty"`
+}
+
+type TaskAssignee struct {
+	ID             string    `json:"id"`
+	BatchID        string    `json:"batch_id"`
+	TaskInstanceID string    `json:"task_instance_id"`
+	UserID         string    `json:"user_id"`
+	AssignmentKey  *string   `json:"assignment_key,omitempty"`
+	Status         string    `json:"status"`
+	User           *User     `json:"user,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 type TaskAssignmentOverrides struct {
@@ -181,6 +194,7 @@ type TaskInstance struct {
 	CustomPayload            map[string]any `json:"custom_payload"`
 	ReplacedByTaskInstanceID *string        `json:"replaced_by_task_instance_id,omitempty"`
 	ReplacesTaskInstanceID   *string        `json:"replaces_task_instance_id,omitempty"`
+	Assignees                []TaskAssignee `json:"assignees"`
 	CreatedAt                time.Time      `json:"created_at"`
 	UpdatedAt                time.Time      `json:"updated_at"`
 }
@@ -192,13 +206,13 @@ type TaskInstanceFilter struct {
 }
 
 type UpdateTaskInstance struct {
-	Title           *string        `json:"title,omitempty"`
-	Description     *string        `json:"description,omitempty"`
-	Instructions    *string        `json:"instructions,omitempty"`
-	Priority        *string        `json:"priority,omitempty"`
-	DueAt           *time.Time     `json:"due_at,omitempty"`
-	ReviewRequired  *bool          `json:"review_required,omitempty"`
-	CustomPayload   map[string]any `json:"custom_payload,omitempty"`
+	Title          *string        `json:"title,omitempty"`
+	Description    *string        `json:"description,omitempty"`
+	Instructions   *string        `json:"instructions,omitempty"`
+	Priority       *string        `json:"priority,omitempty"`
+	DueAt          *time.Time     `json:"due_at,omitempty"`
+	ReviewRequired *bool          `json:"review_required,omitempty"`
+	CustomPayload  map[string]any `json:"custom_payload,omitempty"`
 }
 
 type UpdateTaskInstanceStatus struct {
@@ -217,6 +231,7 @@ type TaskBatchProgress struct {
 	Total         int            `json:"total"`
 	DerivedStatus string         `json:"derived_status"`
 	Summary       map[string]int `json:"summary"`
+	Assignees     []TaskAssignee `json:"assignees"`
 	Instances     []TaskInstance `json:"instances,omitempty"`
 }
 
