@@ -1,1 +1,1 @@
--- No-op: the app now models assignees as children of task instances.
+-- No-op: task instance assignees are intentionally not restored.

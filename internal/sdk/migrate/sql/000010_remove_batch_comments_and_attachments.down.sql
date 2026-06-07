@@ -1,0 +1,1 @@
+-- No-op: batch comments and attachments are intentionally not restored.

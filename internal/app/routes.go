@@ -37,39 +37,17 @@ func (a *App) RegisterRoutes() *gin.Engine {
 			user.GET("/:account/lookup", a.HandleAccountLookup)
 		}
 
-		batches := v1.Group("/batches")
-		batches.Use(middleware.Authenticate(a.jwt))
+		tasks := v1.Group("")
+		tasks.Use(middleware.Authenticate(a.jwt))
 		{
-			batches.POST("", a.HandleCreateTaskBatch)
-			batches.GET("/:batch_id", a.HandleGetTaskBatch)
-			batches.GET("/:batch_id/progress", a.HandleGetTaskBatchProgress)
-			batches.GET("/:batch_id/instances", a.HandleListTaskBatchInstances)
-			batches.POST("/:batch_id/instances", a.HandleAddTaskBatchInstance)
-			batches.POST("/:batch_id/comments", a.HandleCreateTaskBatchComment)
-			batches.GET("/:batch_id/comments", a.HandleListTaskBatchComments)
-			batches.POST("/:batch_id/attachments", a.HandleCreateTaskAttachment)
-			batches.GET("/:batch_id/attachments", a.HandleListTaskAttachments)
-		}
-
-		instances := v1.Group("/instances")
-		instances.Use(middleware.Authenticate(a.jwt))
-		{
-			instances.GET("/me", a.HandleListMyTaskInstances)
-			instances.GET("/:instance_id", a.HandleGetTaskInstance)
-			instances.PATCH("/:instance_id", a.HandleUpdateTaskInstance)
-			instances.PATCH("/:instance_id/status", a.HandleUpdateTaskInstanceStatus)
-			instances.DELETE("/:instance_id", a.HandleDeleteTaskInstance)
-			instances.GET("/:instance_id/events", a.HandleListTaskInstanceEvents)
-			instances.POST("/:instance_id/dependencies", a.HandleCreateTaskInstanceDependency)
-			instances.GET("/:instance_id/dependencies", a.HandleListTaskInstanceDependencies)
-			instances.GET("/:instance_id/dependents", a.HandleListTaskInstanceDependents)
-			instances.POST("/:instance_id/comments", a.HandleCreateTaskComment)
-			instances.GET("/:instance_id/comments", a.HandleListTaskComments)
-			instances.POST("/:instance_id/attachments", a.HandleCreateTaskAttachment)
-			instances.GET("/:instance_id/attachments", a.HandleListTaskAttachments)
-			instances.POST("/:instance_id/submissions", a.HandleCreateTaskSubmission)
-			instances.GET("/:instance_id/submissions", a.HandleListTaskSubmissions)
-			instances.PATCH("/:instance_id/submissions/:submission_id", a.HandleReviewTaskSubmission)
+			tasks.GET("/expectations", a.HandleListExpectations)
+			tasks.GET("/todos", a.HandleListTodos)
+			tasks.POST("/tasks", a.HandleCreateTask)
+			tasks.GET("/tasks/:task_id", a.HandleGetTask)
+			tasks.PATCH("/tasks/:task_id", a.HandleUpdateTask)
+			tasks.PATCH("/tasks/:task_id/status", a.HandleUpdateTaskStatus)
+			tasks.GET("/tasks/:task_id/messages", a.HandleListTaskMessages)
+			tasks.POST("/tasks/:task_id/messages", a.HandleCreateTaskMessage)
 		}
 	}
 

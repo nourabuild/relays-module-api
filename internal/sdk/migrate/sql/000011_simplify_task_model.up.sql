@@ -1,5 +1,15 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+DROP TABLE IF EXISTS todos.task_submissions;
+DROP TABLE IF EXISTS todos.task_attachments;
+DROP TABLE IF EXISTS todos.task_comments;
+DROP TABLE IF EXISTS todos.task_batch_comments;
+DROP TABLE IF EXISTS todos.task_instance_dependencies;
+DROP TABLE IF EXISTS todos.task_instance_events;
+DROP TABLE IF EXISTS todos.task_instance_assignees;
+DROP TABLE IF EXISTS todos.task_instances;
+DROP TABLE IF EXISTS todos.task_batches;
+
 CREATE TABLE IF NOT EXISTS todos.tasks (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_by_id TEXT NOT NULL REFERENCES todos.users(id),

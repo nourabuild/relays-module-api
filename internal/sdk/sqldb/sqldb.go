@@ -34,8 +34,6 @@ var (
 	ErrCheckViolation      = errors.New("check constraint violation")
 	ErrNotNullViolation    = errors.New("not null violation")
 	ErrTransactionFailed   = errors.New("transaction failed")
-	ErrTaskDependencyCycle = errors.New("task dependency cycle")
-	ErrTaskBlockedByDeps   = errors.New("task blocked by dependencies")
 )
 
 // Service represents a service that interacts with a database.
@@ -69,37 +67,15 @@ type Service interface {
 	MarkPasswordResetTokenAsUsed(ctx context.Context, tokenID string) error
 	DeleteExpiredPasswordResetTokens(ctx context.Context) error
 
-	// Task batch operations
-	CreateTaskBatch(ctx context.Context, creatorID string, input models.CreateTaskBatch) (models.TaskBatchCreateResult, error)
-	GetTaskBatch(ctx context.Context, batchID string) (models.TaskBatch, error)
-	GetTaskBatchProgress(ctx context.Context, batchID string, includeInstances bool) (models.TaskBatchProgress, error)
-	ListTaskBatchInstances(ctx context.Context, batchID string) ([]models.TaskInstance, error)
-	IsTaskBatchAssignee(ctx context.Context, batchID, userID string) (bool, error)
-	AddTaskBatchInstance(ctx context.Context, batchID, creatorID string, input models.CreateTaskInstanceInBatch) (models.TaskInstance, error)
-
-	// Task instance operations
-	GetTaskInstance(ctx context.Context, taskInstanceID string) (models.TaskInstance, error)
-	ListTaskInstancesForUser(ctx context.Context, userID string, filter models.TaskInstanceFilter) ([]models.TaskInstance, error)
-	UpdateTaskInstance(ctx context.Context, taskInstanceID, actorID string, input models.UpdateTaskInstance) (models.TaskInstance, error)
-	UpdateTaskInstanceStatus(ctx context.Context, taskInstanceID, actorID string, input models.UpdateTaskInstanceStatus) (models.TaskInstance, error)
-	DeleteTaskInstance(ctx context.Context, taskInstanceID string) error
-	SubmitTaskForReview(ctx context.Context, taskInstanceID, submittedBy string, input models.SubmitTaskReview) (models.TaskInstance, error)
-	ListTaskInstanceEvents(ctx context.Context, taskInstanceID string) ([]models.TaskInstanceEvent, error)
-	CreateTaskInstanceDependency(ctx context.Context, taskInstanceID, creatorID string, input models.CreateTaskInstanceDependency) (models.TaskInstanceDependency, error)
-	ListTaskInstanceDependencies(ctx context.Context, taskInstanceID string) ([]models.TaskInstanceDependency, error)
-	ListTaskInstanceDependents(ctx context.Context, taskInstanceID string) ([]models.TaskInstanceDependency, error)
-
-	// Task collaboration operations
-	CreateTaskComment(ctx context.Context, taskInstanceID, authorID string, input models.CreateTaskComment) (models.TaskComment, error)
-	ListTaskComments(ctx context.Context, taskInstanceID string) ([]models.TaskComment, error)
-	CreateTaskBatchComment(ctx context.Context, batchID, authorID string, input models.CreateTaskBatchComment) (models.TaskBatchComment, error)
-	ListTaskBatchComments(ctx context.Context, batchID string) ([]models.TaskBatchComment, error)
-	CreateTaskAttachment(ctx context.Context, scope, targetID, uploadedBy string, input models.CreateTaskAttachment) (models.TaskAttachment, error)
-	ListTaskAttachments(ctx context.Context, scope, targetID string) ([]models.TaskAttachment, error)
-	GetTaskSubmission(ctx context.Context, submissionID string) (models.TaskSubmission, error)
-	CreateTaskSubmission(ctx context.Context, taskInstanceID, submittedBy string, input models.CreateTaskSubmission) (models.TaskSubmission, error)
-	ListTaskSubmissions(ctx context.Context, taskInstanceID string) ([]models.TaskSubmission, error)
-	ReviewTaskSubmission(ctx context.Context, submissionID, reviewerID string, input models.ReviewTaskSubmission) (models.TaskSubmission, error)
+	// Task operations
+	ListExpectations(ctx context.Context, userID string) ([]models.Task, error)
+	ListTodos(ctx context.Context, userID string) ([]models.Task, error)
+	CreateTask(ctx context.Context, creatorID string, input models.CreateTask) (models.Task, error)
+	GetTask(ctx context.Context, taskID string) (models.Task, error)
+	UpdateTask(ctx context.Context, taskID string, input models.UpdateTask) (models.Task, error)
+	UpdateTaskStatus(ctx context.Context, taskID, status string) (models.Task, error)
+	CreateTaskMessage(ctx context.Context, taskID, authorID string, input models.CreateTaskMessage) (models.TaskMessage, error)
+	ListTaskMessages(ctx context.Context, taskID, userID string) ([]models.TaskMessage, error)
 }
 
 type service struct {
