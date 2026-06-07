@@ -36,17 +36,6 @@ func (a *App) RegisterRoutes() *gin.Engine {
 			user.GET("/search", a.HandleSearchUsers)
 		}
 
-		templates := v1.Group("/templates")
-		templates.Use(middleware.Authenticate(a.jwt))
-		{
-			templates.POST("", a.HandleCreateTaskTemplate)
-			templates.GET("/:template_id", a.HandleGetTaskTemplate)
-			templates.PATCH("/:template_id", a.HandleUpdateTaskTemplate)
-			templates.DELETE("/:template_id", a.HandleArchiveTaskTemplate)
-			templates.POST("/:template_id/attachments", a.HandleCreateTaskAttachment)
-			templates.GET("/:template_id/attachments", a.HandleListTaskAttachments)
-		}
-
 		batches := v1.Group("/batches")
 		batches.Use(middleware.Authenticate(a.jwt))
 		{
