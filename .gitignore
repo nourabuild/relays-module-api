@@ -58,3 +58,5 @@ vendor
 internal/app/handlers_test.go
 
 .claude/skills/sentry/SKILL.md
+
+.claude
