@@ -34,6 +34,7 @@ func (a *App) RegisterRoutes() *gin.Engine {
 		{
 			user.GET("/me", a.HandleMe)
 			user.GET("/search", a.HandleSearchUsers)
+			user.GET("/:account/lookup", a.HandleAccountLookup)
 		}
 
 		batches := v1.Group("/batches")

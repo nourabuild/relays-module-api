@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nourabuild/relays-api/internal/sdk/middleware"
@@ -122,4 +123,30 @@ func (a *App) HandleSearchUsers(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, users)
+}
+
+func (a *App) HandleAccountLookup(c *gin.Context) {
+	if _, err := middleware.GetClaims(c); err != nil {
+		writeError(c, http.StatusUnauthorized, "unauthorized", nil)
+		return
+	}
+
+	account := strings.TrimSpace(c.Param("account"))
+	if account == "" {
+		writeError(c, http.StatusBadRequest, "invalid_account", map[string]string{"account": "account is required"})
+		return
+	}
+
+	user, err := a.db.GetUserByAccount(c.Request.Context(), account)
+	if err != nil {
+		if errors.Is(err, sqldb.ErrDBNotFound) {
+			writeError(c, http.StatusNotFound, "not_found", nil)
+			return
+		}
+		a.toSentry(c, "account_lookup", "db", sentry.LevelError, err)
+		writeError(c, http.StatusInternalServerError, "internal_lookup_error", nil)
+		return
+	}
+
+	c.JSON(http.StatusOK, user)
 }
