@@ -197,22 +197,8 @@ func (a *App) getAuthorizedTaskBatch(c *gin.Context) (models.TaskBatch, bool) {
 func validateCreateTaskBatch(input models.CreateTaskBatch) map[string]string {
 	details := map[string]string{}
 
-	if input.TemplateID == nil && input.Template == nil {
-		details["template"] = "template or template_id is required"
-	}
-	if input.TemplateID != nil && input.Template != nil {
-		details["template"] = "provide either template or template_id, not both"
-	}
-	if input.Template != nil {
-		for key, value := range validateTaskTemplateInput(*input.Template) {
-			details["template."+key] = value
-		}
-	}
-	if input.TemplateID != nil && strings.TrimSpace(*input.TemplateID) == "" {
-		details["template_id"] = "template_id cannot be empty"
-	}
-	if input.AssignmentMode != nil && !models.IsValidAssignmentMode(*input.AssignmentMode) {
-		details["assignment_mode"] = "assignment_mode must be same_work or customized_work"
+	if strings.TrimSpace(input.Title) == "" {
+		details["title"] = "title is required"
 	}
 
 	assignmentKeys := map[string]bool{}

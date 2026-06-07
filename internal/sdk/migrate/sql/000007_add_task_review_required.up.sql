@@ -1,6 +1,3 @@
-ALTER TABLE todos.task_templates
-    ADD COLUMN IF NOT EXISTS review_required BOOLEAN NOT NULL DEFAULT FALSE;
-
 ALTER TABLE todos.task_instances
     ADD COLUMN IF NOT EXISTS review_required BOOLEAN NOT NULL DEFAULT FALSE;
 

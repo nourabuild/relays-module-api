@@ -507,19 +507,6 @@ func (a *App) authorizeAttachmentScope(c *gin.Context, write bool) (string, stri
 		return "", "", false
 	}
 
-	if templateID := c.Param("template_id"); templateID != "" {
-		template, err := a.db.GetTaskTemplate(c.Request.Context(), templateID)
-		if err != nil {
-			a.writeTaskDBError(c, "get_task_template_for_attachment", err)
-			return "", "", false
-		}
-		if !canManageTaskTemplate(template, userID) {
-			writeError(c, http.StatusForbidden, "forbidden", nil)
-			return "", "", false
-		}
-		return models.AttachmentScopeTemplate, template.ID, true
-	}
-
 	if batchID := c.Param("batch_id"); batchID != "" {
 		batch, err := a.db.GetTaskBatch(c.Request.Context(), batchID)
 		if err != nil {

@@ -69,12 +69,6 @@ type Service interface {
 	MarkPasswordResetTokenAsUsed(ctx context.Context, tokenID string) error
 	DeleteExpiredPasswordResetTokens(ctx context.Context) error
 
-	// Task template operations
-	CreateTaskTemplate(ctx context.Context, creatorID string, input models.TaskTemplateInput) (models.TaskTemplate, error)
-	GetTaskTemplate(ctx context.Context, templateID string) (models.TaskTemplate, error)
-	UpdateTaskTemplate(ctx context.Context, templateID string, input models.UpdateTaskTemplate) (models.TaskTemplate, error)
-	ArchiveTaskTemplate(ctx context.Context, templateID string) error
-
 	// Task batch operations
 	CreateTaskBatch(ctx context.Context, creatorID string, input models.CreateTaskBatch) (models.TaskBatchCreateResult, error)
 	GetTaskBatch(ctx context.Context, batchID string) (models.TaskBatch, error)

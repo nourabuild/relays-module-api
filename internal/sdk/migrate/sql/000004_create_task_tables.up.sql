@@ -1,27 +1,14 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
-CREATE TABLE IF NOT EXISTS todos.task_templates (
+CREATE TABLE IF NOT EXISTS todos.task_batches (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_by TEXT NOT NULL REFERENCES todos.users(id),
     title TEXT NOT NULL CHECK (length(trim(title)) > 0),
     description TEXT,
     instructions TEXT,
-    default_priority TEXT,
-    default_due_at TIMESTAMPTZ,
-    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    archived_at TIMESTAMPTZ
-);
-
-CREATE TABLE IF NOT EXISTS todos.task_batches (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    template_id UUID NOT NULL REFERENCES todos.task_templates(id),
-    created_by TEXT NOT NULL REFERENCES todos.users(id),
-    title TEXT,
-    description TEXT,
-    assignment_mode TEXT NOT NULL DEFAULT 'same_work'
-        CHECK (assignment_mode IN ('same_work', 'customized_work')),
+    priority TEXT,
+    due_at TIMESTAMPTZ,
+    review_required BOOLEAN NOT NULL DEFAULT FALSE,
     idempotency_key TEXT,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -34,7 +21,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS unique_task_batches_created_by_idempotency_key
 CREATE TABLE IF NOT EXISTS todos.task_instances (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     batch_id UUID NOT NULL REFERENCES todos.task_batches(id) ON DELETE CASCADE,
-    template_id UUID REFERENCES todos.task_templates(id),
     created_by TEXT NOT NULL REFERENCES todos.users(id),
     assignee_id TEXT NOT NULL REFERENCES todos.users(id),
     assignment_key TEXT,
@@ -51,7 +37,7 @@ CREATE TABLE IF NOT EXISTS todos.task_instances (
     completed_at TIMESTAMPTZ,
     cancelled_at TIMESTAMPTZ,
     completion_note TEXT,
-    template_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+    review_required BOOLEAN NOT NULL DEFAULT FALSE,
     custom_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
     replaced_by_task_instance_id UUID REFERENCES todos.task_instances(id),
     replaces_task_instance_id UUID REFERENCES todos.task_instances(id),
@@ -105,8 +91,7 @@ CREATE TABLE IF NOT EXISTS todos.task_batch_comments (
 
 CREATE TABLE IF NOT EXISTS todos.task_attachments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    scope TEXT NOT NULL CHECK (scope IN ('template', 'batch', 'instance')),
-    template_id UUID REFERENCES todos.task_templates(id) ON DELETE CASCADE,
+    scope TEXT NOT NULL CHECK (scope IN ('batch', 'instance')),
     batch_id UUID REFERENCES todos.task_batches(id) ON DELETE CASCADE,
     task_instance_id UUID REFERENCES todos.task_instances(id) ON DELETE CASCADE,
     uploaded_by TEXT NOT NULL REFERENCES todos.users(id),
@@ -116,9 +101,8 @@ CREATE TABLE IF NOT EXISTS todos.task_attachments (
     size_bytes BIGINT CHECK (size_bytes IS NULL OR size_bytes >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CHECK (
-        (scope = 'template' AND template_id IS NOT NULL AND batch_id IS NULL AND task_instance_id IS NULL)
-        OR (scope = 'batch' AND template_id IS NULL AND batch_id IS NOT NULL AND task_instance_id IS NULL)
-        OR (scope = 'instance' AND template_id IS NULL AND batch_id IS NULL AND task_instance_id IS NOT NULL)
+        (scope = 'batch' AND batch_id IS NOT NULL AND task_instance_id IS NULL)
+        OR (scope = 'instance' AND batch_id IS NULL AND task_instance_id IS NOT NULL)
     )
 );
 
@@ -134,14 +118,8 @@ CREATE TABLE IF NOT EXISTS todos.task_submissions (
     reviewed_by TEXT REFERENCES todos.users(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_task_templates_created_by
-    ON todos.task_templates(created_by);
-
 CREATE INDEX IF NOT EXISTS idx_task_batches_created_by
     ON todos.task_batches(created_by);
-
-CREATE INDEX IF NOT EXISTS idx_task_batches_template
-    ON todos.task_batches(template_id);
 
 CREATE INDEX IF NOT EXISTS idx_task_instances_assignee_status
     ON todos.task_instances(assignee_id, status);
@@ -166,9 +144,6 @@ CREATE INDEX IF NOT EXISTS idx_task_comments_task_instance
 
 CREATE INDEX IF NOT EXISTS idx_task_batch_comments_batch
     ON todos.task_batch_comments(batch_id, created_at);
-
-CREATE INDEX IF NOT EXISTS idx_task_attachments_template
-    ON todos.task_attachments(template_id);
 
 CREATE INDEX IF NOT EXISTS idx_task_attachments_batch
     ON todos.task_attachments(batch_id);

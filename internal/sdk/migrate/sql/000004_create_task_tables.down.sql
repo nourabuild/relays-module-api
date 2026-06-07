@@ -5,4 +5,3 @@ DROP TABLE IF EXISTS todos.task_comments;
 DROP TABLE IF EXISTS todos.task_instance_events;
 DROP TABLE IF EXISTS todos.task_instances;
 DROP TABLE IF EXISTS todos.task_batches;
-DROP TABLE IF EXISTS todos.task_templates;

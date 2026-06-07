@@ -12,6 +12,3 @@ ALTER TABLE todos.task_instances
 
 ALTER TABLE todos.task_instances
     DROP COLUMN IF EXISTS review_required;
-
-ALTER TABLE todos.task_templates
-    DROP COLUMN IF EXISTS review_required;

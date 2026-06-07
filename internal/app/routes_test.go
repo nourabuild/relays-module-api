@@ -16,12 +16,6 @@ func TestRegisterRoutesSplitsTaskResources(t *testing.T) {
 	}
 
 	expectedRoutes := []string{
-		http.MethodPost + " /api/v1/templates",
-		http.MethodGet + " /api/v1/templates/:template_id",
-		http.MethodPatch + " /api/v1/templates/:template_id",
-		http.MethodDelete + " /api/v1/templates/:template_id",
-		http.MethodPost + " /api/v1/templates/:template_id/attachments",
-		http.MethodGet + " /api/v1/templates/:template_id/attachments",
 		http.MethodPost + " /api/v1/batches",
 		http.MethodGet + " /api/v1/batches/:batch_id",
 		http.MethodGet + " /api/v1/batches/:batch_id/progress",
@@ -56,6 +50,9 @@ func TestRegisterRoutesSplitsTaskResources(t *testing.T) {
 	}
 
 	for route := range routes {
+		if strings.Contains(route, " /api/v1/templates") {
+			t.Fatalf("template route is still registered: %s", route)
+		}
 		if strings.Contains(route, " /api/v1/tasks") {
 			t.Fatalf("legacy task route is still registered: %s", route)
 		}

@@ -18,84 +18,6 @@ type sqlRunner interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-func (s *service) CreateTaskTemplate(ctx context.Context, creatorID string, input models.TaskTemplateInput) (models.TaskTemplate, error) {
-	return createTaskTemplate(ctx, s.db, creatorID, input)
-}
-
-func (s *service) GetTaskTemplate(ctx context.Context, templateID string) (models.TaskTemplate, error) {
-	return getTaskTemplate(ctx, s.db, templateID)
-}
-
-func (s *service) UpdateTaskTemplate(ctx context.Context, templateID string, input models.UpdateTaskTemplate) (models.TaskTemplate, error) {
-	metadataJSON, err := nullableJSONMapParam(input.Metadata)
-	if err != nil {
-		return models.TaskTemplate{}, fmt.Errorf("encoding template metadata: %w", err)
-	}
-
-	const query = `
-		UPDATE todos.task_templates
-		SET title = COALESCE($2, title),
-		    description = COALESCE($3, description),
-		    instructions = COALESCE($4, instructions),
-		    default_priority = COALESCE($5, default_priority),
-		    default_due_at = COALESCE($6, default_due_at),
-		    review_required = COALESCE($7, review_required),
-		    metadata = COALESCE($8::jsonb, metadata),
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-		  AND archived_at IS NULL
-		RETURNING id::text, created_by, title, description, instructions, default_priority,
-		          default_due_at, review_required, metadata::text, created_at, updated_at, archived_at
-	`
-
-	template, err := scanTaskTemplate(s.db.QueryRowContext(ctx, query,
-		templateID,
-		NullString(input.Title),
-		NullString(input.Description),
-		NullString(input.Instructions),
-		NullString(input.DefaultPriority),
-		NullTime(input.DefaultDueAt),
-		NullBool(input.ReviewRequired),
-		metadataJSON,
-	))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return models.TaskTemplate{}, ErrDBNotFound
-		}
-		if isPgError(err, checkViolation) {
-			return models.TaskTemplate{}, ErrCheckViolation
-		}
-		return models.TaskTemplate{}, fmt.Errorf("updating task template: %w", err)
-	}
-
-	return template, nil
-}
-
-func (s *service) ArchiveTaskTemplate(ctx context.Context, templateID string) error {
-	const query = `
-		UPDATE todos.task_templates
-		SET archived_at = CURRENT_TIMESTAMP,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-		  AND archived_at IS NULL
-	`
-
-	result, err := s.db.ExecContext(ctx, query, templateID)
-	if err != nil {
-		return fmt.Errorf("archiving task template: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("checking archived task template rows: %w", err)
-	}
-	if rowsAffected == 0 {
-		return ErrDBNotFound
-	}
-
-	return nil
-}
-
 func (s *service) CreateTaskBatch(ctx context.Context, creatorID string, input models.CreateTaskBatch) (models.TaskBatchCreateResult, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -122,55 +44,41 @@ func (s *service) CreateTaskBatch(ctx context.Context, creatorID string, input m
 
 	assignments := withCreatorAssignment(creatorID, input.Assignments)
 
-	var template models.TaskTemplate
-	if input.TemplateID != nil {
-		template, err = getTaskTemplateForCreator(ctx, tx, *input.TemplateID, creatorID)
-		if err != nil {
-			return models.TaskBatchCreateResult{}, err
-		}
-	} else {
-		if input.Template == nil {
-			return models.TaskBatchCreateResult{}, ErrNotNullViolation
-		}
-		template, err = createTaskTemplate(ctx, tx, creatorID, *input.Template)
-		if err != nil {
-			return models.TaskBatchCreateResult{}, err
-		}
-	}
-
-	assignmentMode := models.AssignmentModeSameWork
-	if input.AssignmentMode != nil {
-		assignmentMode = *input.AssignmentMode
-	} else if hasAssignmentOverrides(assignments) {
-		assignmentMode = models.AssignmentModeCustomizedWork
-	}
-
 	metadataJSON, err := marshalJSONMap(input.Metadata)
 	if err != nil {
 		return models.TaskBatchCreateResult{}, fmt.Errorf("encoding task batch metadata: %w", err)
 	}
 
+	reviewRequired := false
+	if input.ReviewRequired != nil {
+		reviewRequired = *input.ReviewRequired
+	}
+
 	const createBatchQuery = `
 		INSERT INTO todos.task_batches (
-			template_id,
 			created_by,
 			title,
 			description,
-			assignment_mode,
+			instructions,
+			priority,
+			due_at,
+			review_required,
 			idempotency_key,
 			metadata
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-		RETURNING id::text, template_id::text, created_by, title, description,
-		          assignment_mode, idempotency_key, metadata::text, created_at
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+		RETURNING id::text, created_by, title, description, instructions, priority,
+		          due_at, review_required, idempotency_key, metadata::text, created_at
 	`
 
 	batch, err := scanTaskBatch(tx.QueryRowContext(ctx, createBatchQuery,
-		template.ID,
 		creatorID,
-		NullString(input.Title),
+		input.Title,
 		NullString(input.Description),
-		assignmentMode,
+		NullString(input.Instructions),
+		NullString(input.Priority),
+		NullTime(input.DueAt),
+		reviewRequired,
 		NullString(input.IdempotencyKey),
 		metadataJSON,
 	))
@@ -190,7 +98,7 @@ func (s *service) CreateTaskBatch(ctx context.Context, creatorID string, input m
 	instances := make([]models.TaskInstance, 0, len(assignments))
 	instancesByAssignmentKey := make(map[string]models.TaskInstance, len(assignments))
 	for _, assignment := range assignments {
-		instance, err := createTaskInstanceForAssignment(ctx, tx, creatorID, template, batch, assignment)
+		instance, err := createTaskInstanceForAssignment(ctx, tx, creatorID, batch, assignment)
 		if err != nil {
 			return models.TaskBatchCreateResult{}, err
 		}
@@ -213,7 +121,6 @@ func (s *service) CreateTaskBatch(ctx context.Context, creatorID string, input m
 
 	result := models.TaskBatchCreateResult{
 		Batch:          batch,
-		Template:       template,
 		Instances:      instances,
 		Dependencies:   dependencies,
 		TotalInstances: len(instances),
@@ -332,12 +239,7 @@ func (s *service) AddTaskBatchInstance(ctx context.Context, batchID, creatorID s
 		return models.TaskInstance{}, err
 	}
 
-	template, err := getTaskTemplate(ctx, tx, batch.TemplateID)
-	if err != nil {
-		return models.TaskInstance{}, err
-	}
-
-	instance, err := createTaskInstanceForAssignment(ctx, tx, creatorID, template, batch, assignment)
+	instance, err := createTaskInstanceForAssignment(ctx, tx, creatorID, batch, assignment)
 	if err != nil {
 		return models.TaskInstance{}, err
 	}
@@ -386,10 +288,10 @@ func (s *service) ListTaskInstancesForUser(ctx context.Context, userID string, f
 	}
 
 	query := `
-		SELECT id::text, batch_id::text, template_id::text, created_by, assignee_id,
+		SELECT id::text, batch_id::text, created_by, assignee_id,
 		       assignment_key, title, description, instructions, priority, due_at, status,
 		       review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
-		       template_snapshot::text, custom_payload::text,
+		       custom_payload::text,
 		       replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		       created_at, updated_at
 		FROM todos.task_instances
@@ -438,10 +340,10 @@ func (s *service) UpdateTaskInstance(ctx context.Context, taskInstanceID, actorI
 		    custom_payload = COALESCE($8::jsonb, custom_payload),
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
-		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
+		RETURNING id::text, batch_id::text, created_by, assignee_id,
 		          assignment_key, title, description, instructions, priority, due_at, status,
 		          review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
-		          template_snapshot::text, custom_payload::text,
+		          custom_payload::text,
 		          replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		          created_at, updated_at
 	`
@@ -524,10 +426,10 @@ func (s *service) UpdateTaskInstanceStatus(ctx context.Context, taskInstanceID, 
 		    progress_percent = $4,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
-		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
+		RETURNING id::text, batch_id::text, created_by, assignee_id,
 		          assignment_key, title, description, instructions, priority, due_at, status,
 		          review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
-		          template_snapshot::text, custom_payload::text,
+		          custom_payload::text,
 		          replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		          created_at, updated_at
 	`
@@ -843,10 +745,8 @@ func (s *service) ListTaskBatchComments(ctx context.Context, batchID string) ([]
 }
 
 func (s *service) CreateTaskAttachment(ctx context.Context, scope, targetID, uploadedBy string, input models.CreateTaskAttachment) (models.TaskAttachment, error) {
-	var templateID, batchID, taskInstanceID sql.NullString
+	var batchID, taskInstanceID sql.NullString
 	switch scope {
-	case models.AttachmentScopeTemplate:
-		templateID = sql.NullString{String: targetID, Valid: true}
 	case models.AttachmentScopeBatch:
 		batchID = sql.NullString{String: targetID, Valid: true}
 	case models.AttachmentScopeInstance:
@@ -864,7 +764,6 @@ func (s *service) CreateTaskAttachment(ctx context.Context, scope, targetID, upl
 	const query = `
 		INSERT INTO todos.task_attachments (
 			scope,
-			template_id,
 			batch_id,
 			task_instance_id,
 			uploaded_by,
@@ -873,14 +772,13 @@ func (s *service) CreateTaskAttachment(ctx context.Context, scope, targetID, upl
 			mime_type,
 			size_bytes
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id::text, scope, template_id::text, batch_id::text, task_instance_id::text,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		RETURNING id::text, scope, batch_id::text, task_instance_id::text,
 		          uploaded_by, file_url, file_name, mime_type, size_bytes, created_at
 	`
 
 	attachment, err := scanTaskAttachment(tx.QueryRowContext(ctx, query,
 		scope,
-		templateID,
 		batchID,
 		taskInstanceID,
 		uploadedBy,
@@ -922,7 +820,7 @@ func (s *service) ListTaskAttachments(ctx context.Context, scope, targetID strin
 	}
 
 	query := `
-		SELECT id::text, scope, template_id::text, batch_id::text, task_instance_id::text,
+		SELECT id::text, scope, batch_id::text, task_instance_id::text,
 		       uploaded_by, file_url, file_name, mime_type, size_bytes, created_at
 		FROM todos.task_attachments
 		WHERE scope = $1
@@ -1114,92 +1012,6 @@ func (s *service) ReviewTaskSubmission(ctx context.Context, submissionID, review
 	return submission, nil
 }
 
-func createTaskTemplate(ctx context.Context, runner sqlRunner, creatorID string, input models.TaskTemplateInput) (models.TaskTemplate, error) {
-	metadataJSON, err := marshalJSONMap(input.Metadata)
-	if err != nil {
-		return models.TaskTemplate{}, fmt.Errorf("encoding task template metadata: %w", err)
-	}
-
-	const query = `
-		INSERT INTO todos.task_templates (
-			created_by,
-			title,
-			description,
-			instructions,
-			default_priority,
-			default_due_at,
-			review_required,
-			metadata
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, FALSE), $8::jsonb)
-		RETURNING id::text, created_by, title, description, instructions, default_priority,
-		          default_due_at, review_required, metadata::text, created_at, updated_at, archived_at
-	`
-
-	template, err := scanTaskTemplate(runner.QueryRowContext(ctx, query,
-		creatorID,
-		input.Title,
-		NullString(input.Description),
-		NullString(input.Instructions),
-		NullString(input.DefaultPriority),
-		NullTime(input.DefaultDueAt),
-		NullBool(input.ReviewRequired),
-		metadataJSON,
-	))
-	if err != nil {
-		if isPgError(err, foreignKeyViolation) {
-			return models.TaskTemplate{}, ErrForeignKeyViolation
-		}
-		if isPgError(err, checkViolation) || isPgError(err, notNullViolation) {
-			return models.TaskTemplate{}, ErrCheckViolation
-		}
-		return models.TaskTemplate{}, fmt.Errorf("creating task template: %w", err)
-	}
-
-	return template, nil
-}
-
-func getTaskTemplate(ctx context.Context, runner sqlRunner, templateID string) (models.TaskTemplate, error) {
-	const query = `
-		SELECT id::text, created_by, title, description, instructions, default_priority,
-		       default_due_at, review_required, metadata::text, created_at, updated_at, archived_at
-		FROM todos.task_templates
-		WHERE id = $1
-		  AND archived_at IS NULL
-	`
-
-	template, err := scanTaskTemplate(runner.QueryRowContext(ctx, query, templateID))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return models.TaskTemplate{}, ErrDBNotFound
-		}
-		return models.TaskTemplate{}, fmt.Errorf("getting task template: %w", err)
-	}
-
-	return template, nil
-}
-
-func getTaskTemplateForCreator(ctx context.Context, runner sqlRunner, templateID, creatorID string) (models.TaskTemplate, error) {
-	const query = `
-		SELECT id::text, created_by, title, description, instructions, default_priority,
-		       default_due_at, review_required, metadata::text, created_at, updated_at, archived_at
-		FROM todos.task_templates
-		WHERE id = $1
-		  AND created_by = $2
-		  AND archived_at IS NULL
-	`
-
-	template, err := scanTaskTemplate(runner.QueryRowContext(ctx, query, templateID, creatorID))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return models.TaskTemplate{}, ErrDBNotFound
-		}
-		return models.TaskTemplate{}, fmt.Errorf("getting task template for creator: %w", err)
-	}
-
-	return template, nil
-}
-
 func getExistingBatchIDByIdempotencyKey(ctx context.Context, runner sqlRunner, creatorID, idempotencyKey string) (string, error) {
 	const query = `
 		SELECT id::text
@@ -1225,11 +1037,6 @@ func getTaskBatchCreateResult(ctx context.Context, runner sqlRunner, batchID str
 		return models.TaskBatchCreateResult{}, err
 	}
 
-	template, err := getTaskTemplate(ctx, runner, batch.TemplateID)
-	if err != nil {
-		return models.TaskBatchCreateResult{}, err
-	}
-
 	instances, err := listTaskBatchInstances(ctx, runner, batchID)
 	if err != nil {
 		return models.TaskBatchCreateResult{}, err
@@ -1242,7 +1049,6 @@ func getTaskBatchCreateResult(ctx context.Context, runner sqlRunner, batchID str
 
 	result := models.TaskBatchCreateResult{
 		Batch:          batch,
-		Template:       template,
 		Instances:      instances,
 		Dependencies:   dependencies,
 		TotalInstances: len(instances),
@@ -1252,8 +1058,8 @@ func getTaskBatchCreateResult(ctx context.Context, runner sqlRunner, batchID str
 
 func getTaskBatch(ctx context.Context, runner sqlRunner, batchID string) (models.TaskBatch, error) {
 	const query = `
-		SELECT id::text, template_id::text, created_by, title, description,
-		       assignment_mode, idempotency_key, metadata::text, created_at
+		SELECT id::text, created_by, title, description, instructions, priority,
+		       due_at, review_required, idempotency_key, metadata::text, created_at
 		FROM todos.task_batches
 		WHERE id = $1
 	`
@@ -1269,13 +1075,8 @@ func getTaskBatch(ctx context.Context, runner sqlRunner, batchID string) (models
 	return batch, nil
 }
 
-func createTaskInstanceForAssignment(ctx context.Context, runner sqlRunner, creatorID string, template models.TaskTemplate, batch models.TaskBatch, assignment models.TaskAssignmentInput) (models.TaskInstance, error) {
-	resolved := resolveAssignment(template, assignment)
-	templateSnapshot, err := json.Marshal(template)
-	if err != nil {
-		return models.TaskInstance{}, fmt.Errorf("encoding template snapshot: %w", err)
-	}
-
+func createTaskInstanceForAssignment(ctx context.Context, runner sqlRunner, creatorID string, batch models.TaskBatch, assignment models.TaskAssignmentInput) (models.TaskInstance, error) {
+	resolved := resolveAssignment(batch, assignment)
 	customPayloadJSON, err := marshalJSONMap(assignment.CustomPayload)
 	if err != nil {
 		return models.TaskInstance{}, fmt.Errorf("encoding assignment custom payload: %w", err)
@@ -1284,7 +1085,6 @@ func createTaskInstanceForAssignment(ctx context.Context, runner sqlRunner, crea
 	const query = `
 		INSERT INTO todos.task_instances (
 			batch_id,
-			template_id,
 			created_by,
 			assignee_id,
 			assignment_key,
@@ -1295,21 +1095,19 @@ func createTaskInstanceForAssignment(ctx context.Context, runner sqlRunner, crea
 			due_at,
 			status,
 			review_required,
-			template_snapshot,
 			custom_payload
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'assigned', $11, $12::jsonb, $13::jsonb)
-		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'assigned', $10, $11::jsonb)
+		RETURNING id::text, batch_id::text, created_by, assignee_id,
 		          assignment_key, title, description, instructions, priority, due_at, status,
 		          review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
-		          template_snapshot::text, custom_payload::text,
+		          custom_payload::text,
 		          replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		          created_at, updated_at
 	`
 
 	instance, err := scanTaskInstance(runner.QueryRowContext(ctx, query,
 		batch.ID,
-		template.ID,
 		creatorID,
 		assignment.AssigneeID,
 		NullString(assignment.AssignmentKey),
@@ -1319,7 +1117,6 @@ func createTaskInstanceForAssignment(ctx context.Context, runner sqlRunner, crea
 		NullString(resolved.Priority),
 		NullTime(resolved.DueAt),
 		resolved.ReviewRequired,
-		templateSnapshot,
 		customPayloadJSON,
 	))
 	if err != nil {
@@ -1340,10 +1137,10 @@ func createTaskInstanceForAssignment(ctx context.Context, runner sqlRunner, crea
 
 func getTaskInstance(ctx context.Context, runner sqlRunner, taskInstanceID string) (models.TaskInstance, error) {
 	const query = `
-		SELECT id::text, batch_id::text, template_id::text, created_by, assignee_id,
+		SELECT id::text, batch_id::text, created_by, assignee_id,
 		       assignment_key, title, description, instructions, priority, due_at, status,
 		       review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
-		       template_snapshot::text, custom_payload::text,
+		       custom_payload::text,
 		       replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		       created_at, updated_at
 		FROM todos.task_instances
@@ -1363,10 +1160,10 @@ func getTaskInstance(ctx context.Context, runner sqlRunner, taskInstanceID strin
 
 func listTaskBatchInstances(ctx context.Context, runner sqlRunner, batchID string) ([]models.TaskInstance, error) {
 	const query = `
-		SELECT id::text, batch_id::text, template_id::text, created_by, assignee_id,
+		SELECT id::text, batch_id::text, created_by, assignee_id,
 		       assignment_key, title, description, instructions, priority, due_at, status,
 		       review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
-		       template_snapshot::text, custom_payload::text,
+		       custom_payload::text,
 		       replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		       created_at, updated_at
 		FROM todos.task_instances
@@ -1844,10 +1641,10 @@ func setTaskInstancePendingReview(ctx context.Context, runner sqlRunner, taskIns
 		    progress_percent = $3,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
-		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
+		RETURNING id::text, batch_id::text, created_by, assignee_id,
 		          assignment_key, title, description, instructions, priority, due_at, status,
 		          review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
-		          template_snapshot::text, custom_payload::text,
+		          custom_payload::text,
 		          replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		          created_at, updated_at
 	`
@@ -1891,10 +1688,10 @@ func applyTaskSubmissionReviewToTaskInstance(ctx context.Context, runner sqlRunn
 		    progress_percent = $4,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
-		RETURNING id::text, batch_id::text, template_id::text, created_by, assignee_id,
+		RETURNING id::text, batch_id::text, created_by, assignee_id,
 		          assignment_key, title, description, instructions, priority, due_at, status,
 		          review_required, progress_percent, started_at, completed_at, cancelled_at, completion_note,
-		          template_snapshot::text, custom_payload::text,
+		          custom_payload::text,
 		          replaced_by_task_instance_id::text, replaces_task_instance_id::text,
 		          created_at, updated_at
 	`
@@ -1922,14 +1719,14 @@ type resolvedAssignment struct {
 	ReviewRequired bool
 }
 
-func resolveAssignment(template models.TaskTemplate, assignment models.TaskAssignmentInput) resolvedAssignment {
+func resolveAssignment(batch models.TaskBatch, assignment models.TaskAssignmentInput) resolvedAssignment {
 	resolved := resolvedAssignment{
-		Title:          template.Title,
-		Description:    template.Description,
-		Instructions:   template.Instructions,
-		Priority:       template.DefaultPriority,
-		DueAt:          template.DefaultDueAt,
-		ReviewRequired: template.ReviewRequired,
+		Title:          batch.Title,
+		Description:    batch.Description,
+		Instructions:   batch.Instructions,
+		Priority:       batch.Priority,
+		DueAt:          batch.DueAt,
+		ReviewRequired: batch.ReviewRequired,
 	}
 
 	if assignment.Overrides == nil {
@@ -1955,15 +1752,6 @@ func resolveAssignment(template models.TaskTemplate, assignment models.TaskAssig
 	}
 
 	return resolved
-}
-
-func hasAssignmentOverrides(assignments []models.TaskAssignmentInput) bool {
-	for _, assignment := range assignments {
-		if assignment.Overrides != nil {
-			return true
-		}
-	}
-	return false
 }
 
 func withCreatorAssignment(creatorID string, assignments []models.TaskAssignmentInput) []models.TaskAssignmentInput {
@@ -2006,8 +1794,6 @@ func deriveBatchStatus(total int, summary map[string]int) string {
 
 func attachmentTargetColumn(scope string) (string, error) {
 	switch scope {
-	case models.AttachmentScopeTemplate:
-		return "template_id", nil
 	case models.AttachmentScopeBatch:
 		return "batch_id", nil
 	case models.AttachmentScopeInstance:
@@ -2043,56 +1829,21 @@ func taskInstanceUpdateEventValue(instance models.TaskInstance, input models.Upd
 	return value
 }
 
-func scanTaskTemplate(scanner rowScanner) (models.TaskTemplate, error) {
-	var template models.TaskTemplate
-	var description, instructions, defaultPriority sql.NullString
-	var defaultDueAt, archivedAt sql.NullTime
-	var metadata string
-
-	if err := scanner.Scan(
-		&template.ID,
-		&template.CreatedBy,
-		&template.Title,
-		&description,
-		&instructions,
-		&defaultPriority,
-		&defaultDueAt,
-		&template.ReviewRequired,
-		&metadata,
-		&template.CreatedAt,
-		&template.UpdatedAt,
-		&archivedAt,
-	); err != nil {
-		return models.TaskTemplate{}, err
-	}
-
-	metadataMap, err := jsonMapFromString(metadata)
-	if err != nil {
-		return models.TaskTemplate{}, err
-	}
-
-	template.Description = StringPtr(description)
-	template.Instructions = StringPtr(instructions)
-	template.DefaultPriority = StringPtr(defaultPriority)
-	template.DefaultDueAt = TimePtr(defaultDueAt)
-	template.Metadata = metadataMap
-	template.ArchivedAt = TimePtr(archivedAt)
-
-	return template, nil
-}
-
 func scanTaskBatch(scanner rowScanner) (models.TaskBatch, error) {
 	var batch models.TaskBatch
-	var title, description, idempotencyKey sql.NullString
+	var description, instructions, priority, idempotencyKey sql.NullString
+	var dueAt sql.NullTime
 	var metadata string
 
 	if err := scanner.Scan(
 		&batch.ID,
-		&batch.TemplateID,
 		&batch.CreatedBy,
-		&title,
+		&batch.Title,
 		&description,
-		&batch.AssignmentMode,
+		&instructions,
+		&priority,
+		&dueAt,
+		&batch.ReviewRequired,
 		&idempotencyKey,
 		&metadata,
 		&batch.CreatedAt,
@@ -2105,8 +1856,10 @@ func scanTaskBatch(scanner rowScanner) (models.TaskBatch, error) {
 		return models.TaskBatch{}, err
 	}
 
-	batch.Title = StringPtr(title)
 	batch.Description = StringPtr(description)
+	batch.Instructions = StringPtr(instructions)
+	batch.Priority = StringPtr(priority)
+	batch.DueAt = TimePtr(dueAt)
 	batch.IdempotencyKey = StringPtr(idempotencyKey)
 	batch.Metadata = metadataMap
 	batch.Assignees = []models.TaskAssignee{}
@@ -2116,15 +1869,14 @@ func scanTaskBatch(scanner rowScanner) (models.TaskBatch, error) {
 
 func scanTaskInstance(scanner rowScanner) (models.TaskInstance, error) {
 	var instance models.TaskInstance
-	var templateID, assignmentKey, description, instructions, priority, completionNote sql.NullString
+	var assignmentKey, description, instructions, priority, completionNote sql.NullString
 	var replacedByTaskInstanceID, replacesTaskInstanceID sql.NullString
 	var dueAt, startedAt, completedAt, cancelledAt sql.NullTime
-	var templateSnapshot, customPayload string
+	var customPayload string
 
 	if err := scanner.Scan(
 		&instance.ID,
 		&instance.BatchID,
-		&templateID,
 		&instance.CreatedBy,
 		&instance.AssigneeID,
 		&assignmentKey,
@@ -2140,7 +1892,6 @@ func scanTaskInstance(scanner rowScanner) (models.TaskInstance, error) {
 		&completedAt,
 		&cancelledAt,
 		&completionNote,
-		&templateSnapshot,
 		&customPayload,
 		&replacedByTaskInstanceID,
 		&replacesTaskInstanceID,
@@ -2150,16 +1901,11 @@ func scanTaskInstance(scanner rowScanner) (models.TaskInstance, error) {
 		return models.TaskInstance{}, err
 	}
 
-	templateSnapshotMap, err := jsonMapFromString(templateSnapshot)
-	if err != nil {
-		return models.TaskInstance{}, err
-	}
 	customPayloadMap, err := jsonMapFromString(customPayload)
 	if err != nil {
 		return models.TaskInstance{}, err
 	}
 
-	instance.TemplateID = StringPtr(templateID)
 	instance.AssignmentKey = StringPtr(assignmentKey)
 	instance.Description = StringPtr(description)
 	instance.Instructions = StringPtr(instructions)
@@ -2169,7 +1915,6 @@ func scanTaskInstance(scanner rowScanner) (models.TaskInstance, error) {
 	instance.CompletedAt = TimePtr(completedAt)
 	instance.CancelledAt = TimePtr(cancelledAt)
 	instance.CompletionNote = StringPtr(completionNote)
-	instance.TemplateSnapshot = templateSnapshotMap
 	instance.CustomPayload = customPayloadMap
 	instance.ReplacedByTaskInstanceID = StringPtr(replacedByTaskInstanceID)
 	instance.ReplacesTaskInstanceID = StringPtr(replacesTaskInstanceID)
@@ -2333,13 +2078,12 @@ func scanTaskBatchComment(scanner rowScanner) (models.TaskBatchComment, error) {
 
 func scanTaskAttachment(scanner rowScanner) (models.TaskAttachment, error) {
 	var attachment models.TaskAttachment
-	var templateID, batchID, taskInstanceID, fileName, mimeType sql.NullString
+	var batchID, taskInstanceID, fileName, mimeType sql.NullString
 	var sizeBytes sql.NullInt64
 
 	if err := scanner.Scan(
 		&attachment.ID,
 		&attachment.Scope,
-		&templateID,
 		&batchID,
 		&taskInstanceID,
 		&attachment.UploadedBy,
@@ -2352,7 +2096,6 @@ func scanTaskAttachment(scanner rowScanner) (models.TaskAttachment, error) {
 		return models.TaskAttachment{}, err
 	}
 
-	attachment.TemplateID = StringPtr(templateID)
 	attachment.BatchID = StringPtr(batchID)
 	attachment.TaskInstanceID = StringPtr(taskInstanceID)
 	attachment.FileName = StringPtr(fileName)
