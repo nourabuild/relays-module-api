@@ -6,12 +6,12 @@ import (
 	"github.com/nourabuild/relays-api/internal/sdk/models"
 )
 
-func TestValidateCreateTaskBatchRequiresAssignments(t *testing.T) {
+func TestValidateCreateTaskBatchRequiresAssignees(t *testing.T) {
 	t.Parallel()
 
-	details := validateCreateTaskBatch(models.CreateTaskBatch{Title: "Review invoice"})
+	details := validateCreateTaskBatch(models.CreateTaskBatch{Title: "Review invoice"}, "28")
 
-	if details["assignments"] != "at least one assignee is required" {
-		t.Fatalf("expected assignments validation error, got %q", details["assignments"])
+	if details["assignees"] != "at least one assignee is required" {
+		t.Fatalf("expected assignees validation error, got %q", details["assignees"])
 	}
 }

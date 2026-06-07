@@ -23,7 +23,7 @@ func (a *App) HandleCreateTaskBatch(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_json", nil)
 		return
 	}
-	if details := validateCreateTaskBatch(input); len(details) > 0 {
+	if details := validateCreateTaskBatch(input, userID); len(details) > 0 {
 		writeError(c, http.StatusBadRequest, "invalid_task_batch", details)
 		return
 	}
@@ -104,13 +104,13 @@ func (a *App) HandleAddTaskBatchInstance(c *gin.Context) {
 		return
 	}
 
-	var input models.TaskAssignmentInput
+	var input models.CreateTaskInstanceInBatch
 	if err := c.ShouldBindJSON(&input); err != nil {
 		writeError(c, http.StatusBadRequest, "invalid_json", nil)
 		return
 	}
-	if details := validateTaskAssignmentInput(input); len(details) > 0 {
-		writeError(c, http.StatusBadRequest, "invalid_task_assignment", details)
+	if details := validateCreateTaskInstanceInBatch(input, userID); len(details) > 0 {
+		writeError(c, http.StatusBadRequest, "invalid_task_instance", details)
 		return
 	}
 
@@ -194,62 +194,51 @@ func (a *App) getAuthorizedTaskBatch(c *gin.Context) (models.TaskBatch, bool) {
 	return batch, true
 }
 
-func validateCreateTaskBatch(input models.CreateTaskBatch) map[string]string {
+func validateCreateTaskBatch(input models.CreateTaskBatch, creatorID string) map[string]string {
 	details := map[string]string{}
 
 	if strings.TrimSpace(input.Title) == "" {
 		details["title"] = "title is required"
 	}
-	if len(input.Assignments) == 0 {
-		details["assignments"] = "at least one assignee is required"
+	for key, value := range validateTaskAssigneeInputs(input.Assignees, creatorID) {
+		details[key] = value
 	}
-
-	assignmentKeys := map[string]bool{}
-	for index, assignment := range input.Assignments {
-		prefix := "assignments[" + strconv.Itoa(index) + "]."
-		for key, value := range validateTaskAssignmentInput(assignment) {
-			details[prefix+key] = value
-		}
-		if assignment.AssignmentKey != nil && strings.TrimSpace(*assignment.AssignmentKey) != "" {
-			if assignmentKeys[*assignment.AssignmentKey] {
-				details[prefix+"assignment_key"] = "assignment_key must be unique within the batch"
-			}
-			assignmentKeys[*assignment.AssignmentKey] = true
-		}
-	}
-	for index, dependency := range input.Dependencies {
-		prefix := "dependencies[" + strconv.Itoa(index) + "]."
-		if strings.TrimSpace(dependency.AssignmentKey) == "" {
-			details[prefix+"assignment_key"] = "assignment_key is required"
-		} else if !assignmentKeys[dependency.AssignmentKey] {
-			details[prefix+"assignment_key"] = "assignment_key must reference an assignment in this batch"
-		}
-		if strings.TrimSpace(dependency.DependsOnAssignmentKey) == "" {
-			details[prefix+"depends_on_assignment_key"] = "depends_on_assignment_key is required"
-		} else if !assignmentKeys[dependency.DependsOnAssignmentKey] {
-			details[prefix+"depends_on_assignment_key"] = "depends_on_assignment_key must reference an assignment in this batch"
-		}
-		if dependency.AssignmentKey == dependency.DependsOnAssignmentKey {
-			details[prefix+"depends_on_assignment_key"] = "task cannot depend on itself"
-		}
-		if dependency.DependencyType != nil && !models.IsValidTaskDependencyType(*dependency.DependencyType) {
-			details[prefix+"dependency_type"] = "dependency_type must be blocks_start or blocks_completion"
-		}
-	}
-
 	return details
 }
 
-func validateTaskAssignmentInput(input models.TaskAssignmentInput) map[string]string {
+func validateCreateTaskInstanceInBatch(input models.CreateTaskInstanceInBatch, creatorID string) map[string]string {
 	details := map[string]string{}
-	if strings.TrimSpace(input.AssigneeID) == "" {
-		details["assignee_id"] = "assignee_id is required"
+	if strings.TrimSpace(input.Title) == "" {
+		details["title"] = "title is required"
 	}
-	if input.AssignmentKey != nil && strings.TrimSpace(*input.AssignmentKey) == "" {
-		details["assignment_key"] = "assignment_key cannot be empty"
+	for key, value := range validateTaskAssigneeInputs(input.Assignees, creatorID) {
+		details[key] = value
 	}
-	if input.Overrides != nil && input.Overrides.Title != nil && strings.TrimSpace(*input.Overrides.Title) == "" {
-		details["overrides.title"] = "override title cannot be empty"
+	return details
+}
+
+func validateTaskAssigneeInputs(inputs []models.TaskAssigneeInput, creatorID string) map[string]string {
+	details := map[string]string{}
+	if len(inputs) == 0 {
+		details["assignees"] = "at least one assignee is required"
+		return details
+	}
+
+	seenUserIDs := map[string]bool{}
+	for index, assignee := range inputs {
+		prefix := "assignees[" + strconv.Itoa(index) + "]."
+		userID := strings.TrimSpace(assignee.UserID)
+		if userID == "" {
+			details[prefix+"user_id"] = "user_id is required"
+			continue
+		}
+		if userID == creatorID {
+			details[prefix+"user_id"] = "creator is added automatically as assigned_by"
+		}
+		if seenUserIDs[userID] {
+			details[prefix+"user_id"] = "user_id must be unique"
+		}
+		seenUserIDs[userID] = true
 	}
 	return details
 }

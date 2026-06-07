@@ -67,7 +67,7 @@ func (a *App) HandleUpdateTaskInstance(c *gin.Context) {
 		return
 	}
 
-	if !canManageTaskInstance(instance, userID) && !(instance.AssigneeID == userID && assigneeCanPatchInstance(input)) {
+	if !canManageTaskInstance(instance, userID) && !(isTaskInstanceAssignee(instance, userID) && assigneeCanPatchInstance(input)) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
@@ -108,7 +108,7 @@ func (a *App) HandleUpdateTaskInstanceStatus(c *gin.Context) {
 	}
 
 	canManage := canManageTaskInstance(instance, userID)
-	isAssignee := instance.AssigneeID == userID
+	isAssignee := isTaskInstanceAssignee(instance, userID)
 
 	switch input.Status {
 	case models.TaskStatusInProgress, models.TaskStatusCompleted:
@@ -349,7 +349,7 @@ func (a *App) HandleCreateTaskSubmission(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if instance.AssigneeID != userID {
+	if !isTaskInstanceAssignee(instance, userID) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
@@ -600,11 +600,29 @@ func parseTaskInstanceFilter(c *gin.Context) (models.TaskInstanceFilter, map[str
 }
 
 func canAccessTaskInstance(instance models.TaskInstance, userID string) bool {
-	return instance.CreatedBy == userID || instance.AssigneeID == userID
+	return instance.CreatedBy == userID || isTaskInstanceParticipant(instance, userID)
 }
 
 func canManageTaskInstance(instance models.TaskInstance, userID string) bool {
 	return instance.CreatedBy == userID
+}
+
+func isTaskInstanceAssignee(instance models.TaskInstance, userID string) bool {
+	for _, assignee := range instance.Assignees {
+		if assignee.UserID == userID && assignee.Role == "assignee" {
+			return true
+		}
+	}
+	return false
+}
+
+func isTaskInstanceParticipant(instance models.TaskInstance, userID string) bool {
+	for _, assignee := range instance.Assignees {
+		if assignee.UserID == userID {
+			return true
+		}
+	}
+	return false
 }
 
 func assigneeCanPatchInstance(input models.UpdateTaskInstance) bool {

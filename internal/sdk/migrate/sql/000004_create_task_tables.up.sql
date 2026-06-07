@@ -3,12 +3,6 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE TABLE IF NOT EXISTS todos.task_batches (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     created_by TEXT NOT NULL REFERENCES todos.users(id),
-    title TEXT NOT NULL CHECK (length(trim(title)) > 0),
-    description TEXT,
-    instructions TEXT,
-    priority TEXT,
-    due_at TIMESTAMPTZ,
-    review_required BOOLEAN NOT NULL DEFAULT FALSE,
     idempotency_key TEXT,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -22,8 +16,6 @@ CREATE TABLE IF NOT EXISTS todos.task_instances (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     batch_id UUID NOT NULL REFERENCES todos.task_batches(id) ON DELETE CASCADE,
     created_by TEXT NOT NULL REFERENCES todos.users(id),
-    assignee_id TEXT NOT NULL REFERENCES todos.users(id),
-    assignment_key TEXT,
     title TEXT NOT NULL CHECK (length(trim(title)) > 0),
     description TEXT,
     instructions TEXT,
@@ -45,9 +37,17 @@ CREATE TABLE IF NOT EXISTS todos.task_instances (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS unique_task_instances_assignment_key_per_batch
-    ON todos.task_instances(batch_id, assignment_key)
-    WHERE assignment_key IS NOT NULL;
+CREATE TABLE IF NOT EXISTS todos.task_instance_assignees (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    task_instance_id UUID NOT NULL REFERENCES todos.task_instances(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES todos.users(id),
+    role TEXT NOT NULL CHECK (role IN ('assigned_by', 'assignee')),
+    status TEXT NOT NULL DEFAULT 'assigned'
+        CHECK (status IN ('assigned_by', 'assigned', 'in_progress', 'blocked', 'pending_review', 'completed', 'cancelled')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (task_instance_id, user_id)
+);
 
 CREATE TABLE IF NOT EXISTS todos.task_instance_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -121,11 +121,11 @@ CREATE TABLE IF NOT EXISTS todos.task_submissions (
 CREATE INDEX IF NOT EXISTS idx_task_batches_created_by
     ON todos.task_batches(created_by);
 
-CREATE INDEX IF NOT EXISTS idx_task_instances_assignee_status
-    ON todos.task_instances(assignee_id, status);
+CREATE INDEX IF NOT EXISTS idx_task_instance_assignees_task_instance
+    ON todos.task_instance_assignees(task_instance_id);
 
-CREATE INDEX IF NOT EXISTS idx_task_instances_assignee_due
-    ON todos.task_instances(assignee_id, due_at);
+CREATE INDEX IF NOT EXISTS idx_task_instance_assignees_user
+    ON todos.task_instance_assignees(user_id);
 
 CREATE INDEX IF NOT EXISTS idx_task_instances_batch
     ON todos.task_instances(batch_id);
