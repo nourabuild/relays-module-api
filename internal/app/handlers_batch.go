@@ -200,6 +200,9 @@ func validateCreateTaskBatch(input models.CreateTaskBatch) map[string]string {
 	if strings.TrimSpace(input.Title) == "" {
 		details["title"] = "title is required"
 	}
+	if len(input.Assignments) == 0 {
+		details["assignments"] = "at least one assignee is required"
+	}
 
 	assignmentKeys := map[string]bool{}
 	for index, assignment := range input.Assignments {

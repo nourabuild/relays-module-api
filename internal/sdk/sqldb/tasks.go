@@ -42,7 +42,7 @@ func (s *service) CreateTaskBatch(ctx context.Context, creatorID string, input m
 		}
 	}
 
-	assignments := withCreatorAssignment(creatorID, input.Assignments)
+	assignments := input.Assignments
 
 	metadataJSON, err := marshalJSONMap(input.Metadata)
 	if err != nil {
@@ -1281,14 +1281,69 @@ func listTaskAssigneesByBatchIDs(ctx context.Context, runner sqlRunner, batchIDs
 	}
 
 	query := `
-		SELECT ti.id::text, ti.batch_id::text, ti.assignee_id, ti.assignment_key, ti.status,
-		       u.id::text, u.name, u.account, u.email, u.bio, u.dob, u.city, u.phone,
-		       u.avatar_photo_id, u.is_admin, u.created_at, u.updated_at,
-		       ti.created_at, ti.updated_at
-		FROM todos.task_instances ti
-		JOIN todos.users u ON u.id = ti.assignee_id
-		WHERE ti.batch_id::text IN (` + strings.Join(placeholders, ", ") + `)
-		ORDER BY ti.batch_id::text, ti.created_at ASC
+		WITH task_people AS (
+			SELECT
+				('assigned-by:' || batch.id::text) AS id,
+				batch.id::text AS batch_id,
+				NULL::text AS task_instance_id,
+				batch.created_by AS user_id,
+				NULL::text AS assignment_key,
+				'assigned_by' AS status,
+				creator.id::text AS profile_id,
+				creator.name,
+				creator.account,
+				creator.email,
+				creator.bio,
+				creator.dob,
+				creator.city,
+				creator.phone,
+				creator.avatar_photo_id,
+				creator.is_admin,
+				creator.created_at AS profile_created_at,
+				creator.updated_at AS profile_updated_at,
+				batch.created_at,
+				batch.created_at AS updated_at,
+				0 AS sort_rank
+			FROM todos.task_batches batch
+			JOIN todos.users creator ON creator.id = batch.created_by
+			WHERE batch.id::text IN (` + strings.Join(placeholders, ", ") + `)
+
+			UNION ALL
+
+			SELECT
+				task.id::text AS id,
+				task.batch_id::text AS batch_id,
+				task.id::text AS task_instance_id,
+				task.assignee_id AS user_id,
+				task.assignment_key,
+				task.status,
+				assignee.id::text AS profile_id,
+				assignee.name,
+				assignee.account,
+				assignee.email,
+				assignee.bio,
+				assignee.dob,
+				assignee.city,
+				assignee.phone,
+				assignee.avatar_photo_id,
+				assignee.is_admin,
+				assignee.created_at AS profile_created_at,
+				assignee.updated_at AS profile_updated_at,
+				task.created_at,
+				task.updated_at,
+				1 AS sort_rank
+			FROM todos.task_instances task
+			JOIN todos.task_batches batch ON batch.id = task.batch_id
+			JOIN todos.users assignee ON assignee.id = task.assignee_id
+			WHERE task.batch_id::text IN (` + strings.Join(placeholders, ", ") + `)
+			  AND task.assignee_id <> batch.created_by
+		)
+		SELECT id, batch_id, task_instance_id, user_id, assignment_key, status,
+		       profile_id, name, account, email, bio, dob, city, phone,
+		       avatar_photo_id, is_admin, profile_created_at, profile_updated_at,
+		       created_at, updated_at
+		FROM task_people
+		ORDER BY batch_id, sort_rank, created_at ASC
 	`
 
 	rows, err := runner.QueryContext(ctx, query, args...)
@@ -1754,19 +1809,6 @@ func resolveAssignment(batch models.TaskBatch, assignment models.TaskAssignmentI
 	return resolved
 }
 
-func withCreatorAssignment(creatorID string, assignments []models.TaskAssignmentInput) []models.TaskAssignmentInput {
-	for _, assignment := range assignments {
-		if assignment.AssigneeID == creatorID {
-			return assignments
-		}
-	}
-
-	normalized := make([]models.TaskAssignmentInput, 0, len(assignments)+1)
-	normalized = append(normalized, models.TaskAssignmentInput{AssigneeID: creatorID})
-	normalized = append(normalized, assignments...)
-	return normalized
-}
-
 func deriveBatchStatus(total int, summary map[string]int) string {
 	if total == 0 {
 		return "empty"
@@ -1941,13 +1983,14 @@ func scanTaskInstances(rows *sql.Rows) ([]models.TaskInstance, error) {
 func scanTaskAssignee(scanner rowScanner) (models.TaskAssignee, error) {
 	var assignee models.TaskAssignee
 	var user models.User
-	var assignmentKey sql.NullString
+	var taskInstanceID, assignmentKey sql.NullString
 	var bio, dob, city, phone sql.NullString
 	var avatarPhotoID sql.NullInt32
 
 	if err := scanner.Scan(
 		&assignee.ID,
 		&assignee.BatchID,
+		&taskInstanceID,
 		&assignee.UserID,
 		&assignmentKey,
 		&assignee.Status,
@@ -1975,7 +2018,7 @@ func scanTaskAssignee(scanner rowScanner) (models.TaskAssignee, error) {
 	user.Phone = StringPtr(phone)
 	user.AvatarPhotoID = Int32Ptr(avatarPhotoID)
 
-	assignee.TaskInstanceID = assignee.ID
+	assignee.TaskInstanceID = StringPtr(taskInstanceID)
 	assignee.AssignmentKey = StringPtr(assignmentKey)
 	assignee.User = &user
 

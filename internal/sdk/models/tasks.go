@@ -105,7 +105,7 @@ type TaskAssignmentInput struct {
 type TaskAssignee struct {
 	ID             string    `json:"id"`
 	BatchID        string    `json:"batch_id"`
-	TaskInstanceID string    `json:"task_instance_id"`
+	TaskInstanceID *string   `json:"task_instance_id,omitempty"`
 	UserID         string    `json:"user_id"`
 	AssignmentKey  *string   `json:"assignment_key,omitempty"`
 	Status         string    `json:"status"`
