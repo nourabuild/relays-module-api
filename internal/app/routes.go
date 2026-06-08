@@ -49,10 +49,15 @@ func (a *App) RegisterRoutes() *gin.Engine {
 		}
 
 		chat := v1.Group("/chat")
-		chat.Use(middleware.Authenticate(a.jwt))
 		{
-			chat.GET("/task/:task_id/messages", a.HandleListTaskMessages)
-			chat.POST("/task/:task_id/messages", a.HandleCreateTaskMessage)
+			chat.GET("/task/:task_id/ws", a.HandleTaskChatWebSocket)
+
+			protectedChat := chat.Group("")
+			protectedChat.Use(middleware.Authenticate(a.jwt))
+			{
+				protectedChat.GET("/task/:task_id/messages", a.HandleListTaskMessages)
+				protectedChat.POST("/task/:task_id/messages", a.HandleCreateTaskMessage)
+			}
 		}
 	}
 

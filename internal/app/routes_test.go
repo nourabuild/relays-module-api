@@ -22,6 +22,7 @@ func TestRegisterRoutesUsesMinimalTaskSurface(t *testing.T) {
 		http.MethodGet + " /api/v1/task/:task_id",
 		http.MethodPatch + " /api/v1/task/:task_id",
 		http.MethodPatch + " /api/v1/task/:task_id/status",
+		http.MethodGet + " /api/v1/chat/task/:task_id/ws",
 		http.MethodGet + " /api/v1/chat/task/:task_id/messages",
 		http.MethodPost + " /api/v1/chat/task/:task_id/messages",
 	}
