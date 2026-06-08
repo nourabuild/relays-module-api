@@ -37,17 +37,22 @@ func (a *App) RegisterRoutes() *gin.Engine {
 			user.GET("/:account/lookup", a.HandleAccountLookup)
 		}
 
-		tasks := v1.Group("")
-		tasks.Use(middleware.Authenticate(a.jwt))
+		task := v1.Group("/task")
+		task.Use(middleware.Authenticate(a.jwt))
 		{
-			tasks.GET("/expectations", a.HandleListExpectations)
-			tasks.GET("/todos", a.HandleListTodos)
-			tasks.POST("/tasks", a.HandleCreateTask)
-			tasks.GET("/tasks/:task_id", a.HandleGetTask)
-			tasks.PATCH("/tasks/:task_id", a.HandleUpdateTask)
-			tasks.PATCH("/tasks/:task_id/status", a.HandleUpdateTaskStatus)
-			tasks.GET("/tasks/:task_id/messages", a.HandleListTaskMessages)
-			tasks.POST("/tasks/:task_id/messages", a.HandleCreateTaskMessage)
+			task.GET("/expectations", a.HandleListExpectations)
+			task.GET("/todos", a.HandleListTodos)
+			task.POST("", a.HandleCreateTask)
+			task.GET("/:task_id", a.HandleGetTask)
+			task.PATCH("/:task_id", a.HandleUpdateTask)
+			task.PATCH("/:task_id/status", a.HandleUpdateTaskStatus)
+		}
+
+		chat := v1.Group("/chat")
+		chat.Use(middleware.Authenticate(a.jwt))
+		{
+			chat.GET("/task/:task_id/messages", a.HandleListTaskMessages)
+			chat.POST("/task/:task_id/messages", a.HandleCreateTaskMessage)
 		}
 	}
 

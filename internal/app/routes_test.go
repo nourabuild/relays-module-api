@@ -16,14 +16,14 @@ func TestRegisterRoutesUsesMinimalTaskSurface(t *testing.T) {
 	}
 
 	expectedRoutes := []string{
-		http.MethodGet + " /api/v1/expectations",
-		http.MethodGet + " /api/v1/todos",
-		http.MethodPost + " /api/v1/tasks",
-		http.MethodGet + " /api/v1/tasks/:task_id",
-		http.MethodPatch + " /api/v1/tasks/:task_id",
-		http.MethodPatch + " /api/v1/tasks/:task_id/status",
-		http.MethodGet + " /api/v1/tasks/:task_id/messages",
-		http.MethodPost + " /api/v1/tasks/:task_id/messages",
+		http.MethodGet + " /api/v1/task/expectations",
+		http.MethodGet + " /api/v1/task/todos",
+		http.MethodPost + " /api/v1/task",
+		http.MethodGet + " /api/v1/task/:task_id",
+		http.MethodPatch + " /api/v1/task/:task_id",
+		http.MethodPatch + " /api/v1/task/:task_id/status",
+		http.MethodGet + " /api/v1/chat/task/:task_id/messages",
+		http.MethodPost + " /api/v1/chat/task/:task_id/messages",
 	}
 
 	for _, expected := range expectedRoutes {
