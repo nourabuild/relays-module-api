@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -60,6 +61,8 @@ func (a *App) HandleCreateTaskMessage(c *gin.Context) {
 }
 
 func (a *App) HandleTaskChatWebSocket(c *gin.Context) {
+	slog.Info("backend route hit", "route", "GET /api/v1/chat/task/:task_id/ws", "task_id", c.Param("task_id"))
+
 	userID, ok := a.authenticateWebSocket(c)
 	if !ok {
 		return
