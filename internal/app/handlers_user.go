@@ -30,7 +30,7 @@ func (a *App) HandleMe(c *gin.Context) {
 		}
 
 		// User not found locally — fetch from auth service and create
-		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, "https://api.auth.noura.software/api/v1/user/me", nil)
+		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, authServiceMeURL(), nil)
 		if err != nil {
 			a.toSentry(c, "me", "http", sentry.LevelError, err)
 			writeError(c, http.StatusInternalServerError, "internal_auth_request_error", nil)
