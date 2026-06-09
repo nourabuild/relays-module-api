@@ -41,10 +41,25 @@ func NewTokenService() *TokenService {
 }
 
 func envOrDefault(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+	if value := normalizeEnvValue(os.Getenv(key)); value != "" {
 		return value
 	}
 	return fallback
+}
+
+func normalizeEnvValue(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) < 2 {
+		return value
+	}
+
+	first := value[0]
+	last := value[len(value)-1]
+	if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+		return value[1 : len(value)-1]
+	}
+
+	return value
 }
 
 func (s *TokenService) ParseAccessToken(ctx context.Context, tokenString string) (*Claims, error) {

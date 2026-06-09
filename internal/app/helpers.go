@@ -21,7 +21,7 @@ func writeError(c *gin.Context, status int, errCode string, details map[string]s
 func (a *App) toSentry(c *gin.Context, handler, errType string, level sentry.Level, err error) {
 	a.sentry.WithScope(func(scope *sentry.Scope) {
 		scope.SetTag("handler", handler)
-		scope.SetExtra("error_type", errType)
+		scope.SetTag("error_type", errType)
 		scope.SetLevel(level)
 		if reqID := c.GetHeader("X-Request-ID"); reqID != "" {
 			scope.SetTag("request_id", reqID)
