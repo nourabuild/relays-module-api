@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/nourabuild/relays-api/internal/app"
 	"github.com/nourabuild/relays-api/internal/sdk/config"
@@ -37,6 +38,11 @@ func main() {
 func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// Gin defaults to debug mode; production noise unless explicitly chosen.
+	if _, ok := os.LookupEnv("GIN_MODE"); !ok {
+		gin.SetMode(gin.ReleaseMode)
+	}
 
 	// 2. Resource Management with WaitGroups
 	var wg sync.WaitGroup
