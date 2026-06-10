@@ -93,6 +93,10 @@ func (a *App) HandleUpdateTask(c *gin.Context) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
+	if models.IsTerminalTaskStatus(task.Status) {
+		writeError(c, http.StatusConflict, "task_not_editable", map[string]string{"status": "task must be open to be edited"})
+		return
+	}
 
 	var input models.UpdateTask
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -136,17 +140,26 @@ func (a *App) HandleUpdateTaskStatus(c *gin.Context) {
 
 	switch input.Status {
 	case models.TaskStatusDone:
+		if models.IsTerminalTaskStatus(task.Status) {
+			writeError(c, http.StatusConflict, "task_status_conflict", map[string]string{"status": "task is already " + task.Status})
+			return
+		}
 		if task.AssignedToID != userID {
 			writeError(c, http.StatusForbidden, "forbidden", nil)
 			return
 		}
 	case models.TaskStatusCancelled:
+		if models.IsTerminalTaskStatus(task.Status) {
+			writeError(c, http.StatusConflict, "task_status_conflict", map[string]string{"status": "task is already " + task.Status})
+			return
+		}
 		if task.CreatedByID != userID {
 			writeError(c, http.StatusForbidden, "forbidden", nil)
 			return
 		}
 	case models.TaskStatusOpen:
-		if !canAccessTask(task, userID) {
+		// Reopening (and re-asserting open) is reserved for the creator.
+		if task.CreatedByID != userID {
 			writeError(c, http.StatusForbidden, "forbidden", nil)
 			return
 		}

@@ -69,20 +69,20 @@ migrate-create:
 
 # Run migrations
 migrate-up:
-	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" up
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=$(or $(BLUEPRINT_DB_SSLMODE),require)" up
 
 migrate-down:
-	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" down
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=$(or $(BLUEPRINT_DB_SSLMODE),require)" down
 
 migrate-force:
 	@read -p "Enter version: " version; \
-	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" force $$version
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=$(or $(BLUEPRINT_DB_SSLMODE),require)" force $$version
 
 migrate-version:
-	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" version
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=$(or $(BLUEPRINT_DB_SSLMODE),require)" version
 
 migrate-drop:
-	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=disable" drop -f
+	migrate -path internal/sdk/migrate/sql -database "$(DATABASE_URL)?sslmode=$(or $(BLUEPRINT_DB_SSLMODE),require)" drop -f
 
 
 # ==============================================================================

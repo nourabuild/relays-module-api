@@ -1,3 +1,4 @@
+// Package websocket provides per-task chat rooms over WebSocket connections.
 package websocket
 
 import (

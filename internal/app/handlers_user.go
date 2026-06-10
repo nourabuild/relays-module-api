@@ -3,7 +3,6 @@ package app
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 
@@ -58,25 +57,6 @@ func (a *App) HandleMe(c *gin.Context) {
 			return
 		}
 
-		fmt.Printf("Creating local user for auth service user: %+v\n", authUser)
-
-		// Creating local user for auth service user:
-		// // User {
-		//   ID: 27
-		//   Name: "John Doe"
-		//   Account: "johndoe"
-		//   Email: "john@example.com"
-		//   Password: []
-		//   Bio: ""
-		//   DOB: ""
-		//   City: ""
-		//   Phone: ""
-		//   AvatarPhotoID: ""
-		//   IsAdmin: false
-		//   CreatedAt: 2026-02-06 17:30:25.246413 UTC
-		//   UpdatedAt: 2026-02-06 17:30:25.246413 UTC
-		// }
-
 		user, err = a.db.CreateUser(c.Request.Context(), models.NewUser{
 			ID:      authUser.ID,
 			Name:    authUser.Name,
@@ -105,7 +85,7 @@ func (a *App) HandleSearchUsers(c *gin.Context) {
 	// Get the search query parameter
 	query := c.Query("q")
 	if query == "" {
-		c.JSON(http.StatusOK, []models.User{})
+		c.JSON(http.StatusOK, []models.PublicUser{})
 		return
 	}
 
@@ -117,12 +97,13 @@ func (a *App) HandleSearchUsers(c *gin.Context) {
 		return
 	}
 
-	// Return empty array if no results
-	if users == nil {
-		users = []models.User{}
+	// Other users' profiles are public-shape only: no email/phone/DOB
+	profiles := make([]models.PublicUser, 0, len(users))
+	for _, user := range users {
+		profiles = append(profiles, models.PublicProfile(user))
 	}
 
-	c.JSON(http.StatusOK, users)
+	c.JSON(http.StatusOK, profiles)
 }
 
 func (a *App) HandleAccountLookup(c *gin.Context) {
@@ -148,5 +129,5 @@ func (a *App) HandleAccountLookup(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, user)
+	c.JSON(http.StatusOK, models.PublicProfile(user))
 }

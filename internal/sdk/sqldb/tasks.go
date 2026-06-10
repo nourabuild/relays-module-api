@@ -9,6 +9,8 @@ import (
 	"github.com/nourabuild/relays-api/internal/sdk/models"
 )
 
+// Embedded users intentionally expose only public-profile columns; PII
+// (email, phone, dob, city) must never be selected for other users.
 const taskSelectColumns = `
 	t.id::text,
 	t.created_by_id,
@@ -25,27 +27,13 @@ const taskSelectColumns = `
 	creator.id::text,
 	creator.name,
 	creator.account,
-	creator.email,
 	creator.bio,
-	creator.dob,
-	creator.city,
-	creator.phone,
 	creator.avatar_photo_id,
-	creator.is_admin,
-	creator.created_at,
-	creator.updated_at,
 	assignee.id::text,
 	assignee.name,
 	assignee.account,
-	assignee.email,
 	assignee.bio,
-	assignee.dob,
-	assignee.city,
-	assignee.phone,
-	assignee.avatar_photo_id,
-	assignee.is_admin,
-	assignee.created_at,
-	assignee.updated_at
+	assignee.avatar_photo_id
 `
 
 const taskJoins = `
@@ -62,15 +50,8 @@ const taskMessageSelectColumns = `
 	author.id::text,
 	author.name,
 	author.account,
-	author.email,
 	author.bio,
-	author.dob,
-	author.city,
-	author.phone,
-	author.avatar_photo_id,
-	author.is_admin,
-	author.created_at,
-	author.updated_at
+	author.avatar_photo_id
 `
 
 func (s *service) ListExpectations(ctx context.Context, userID string) ([]models.Task, error) {
@@ -290,9 +271,8 @@ func scanTaskWithUsers(scanner rowScanner) (models.Task, error) {
 	var task models.Task
 	var description, delegatedFromTaskID sql.NullString
 	var dueAt, completedAt, cancelledAt sql.NullTime
-	var creator, assignee models.User
-	var creatorBio, creatorDOB, creatorCity, creatorPhone sql.NullString
-	var assigneeBio, assigneeDOB, assigneeCity, assigneePhone sql.NullString
+	var creator, assignee models.PublicUser
+	var creatorBio, assigneeBio sql.NullString
 	var creatorAvatarPhotoID, assigneeAvatarPhotoID sql.NullInt32
 
 	if err := scanner.Scan(
@@ -311,27 +291,13 @@ func scanTaskWithUsers(scanner rowScanner) (models.Task, error) {
 		&creator.ID,
 		&creator.Name,
 		&creator.Account,
-		&creator.Email,
 		&creatorBio,
-		&creatorDOB,
-		&creatorCity,
-		&creatorPhone,
 		&creatorAvatarPhotoID,
-		&creator.IsAdmin,
-		&creator.CreatedAt,
-		&creator.UpdatedAt,
 		&assignee.ID,
 		&assignee.Name,
 		&assignee.Account,
-		&assignee.Email,
 		&assigneeBio,
-		&assigneeDOB,
-		&assigneeCity,
-		&assigneePhone,
 		&assigneeAvatarPhotoID,
-		&assignee.IsAdmin,
-		&assignee.CreatedAt,
-		&assignee.UpdatedAt,
 	); err != nil {
 		return models.Task{}, err
 	}
@@ -342,8 +308,10 @@ func scanTaskWithUsers(scanner rowScanner) (models.Task, error) {
 	task.CompletedAt = TimePtr(completedAt)
 	task.CancelledAt = TimePtr(cancelledAt)
 
-	applyUserNullableFields(&creator, creatorBio, creatorDOB, creatorCity, creatorPhone, creatorAvatarPhotoID)
-	applyUserNullableFields(&assignee, assigneeBio, assigneeDOB, assigneeCity, assigneePhone, assigneeAvatarPhotoID)
+	creator.Bio = StringPtr(creatorBio)
+	creator.AvatarPhotoID = Int32Ptr(creatorAvatarPhotoID)
+	assignee.Bio = StringPtr(assigneeBio)
+	assignee.AvatarPhotoID = Int32Ptr(assigneeAvatarPhotoID)
 	task.CreatedBy = &creator
 	task.AssignedTo = &assignee
 
@@ -352,8 +320,8 @@ func scanTaskWithUsers(scanner rowScanner) (models.Task, error) {
 
 func scanTaskMessageWithAuthor(scanner rowScanner) (models.TaskMessage, error) {
 	var message models.TaskMessage
-	var author models.User
-	var bio, dob, city, phone sql.NullString
+	var author models.PublicUser
+	var bio sql.NullString
 	var avatarPhotoID sql.NullInt32
 
 	if err := scanner.Scan(
@@ -365,31 +333,17 @@ func scanTaskMessageWithAuthor(scanner rowScanner) (models.TaskMessage, error) {
 		&author.ID,
 		&author.Name,
 		&author.Account,
-		&author.Email,
 		&bio,
-		&dob,
-		&city,
-		&phone,
 		&avatarPhotoID,
-		&author.IsAdmin,
-		&author.CreatedAt,
-		&author.UpdatedAt,
 	); err != nil {
 		return models.TaskMessage{}, err
 	}
 
-	applyUserNullableFields(&author, bio, dob, city, phone, avatarPhotoID)
+	author.Bio = StringPtr(bio)
+	author.AvatarPhotoID = Int32Ptr(avatarPhotoID)
 	message.Author = &author
 
 	return message, nil
-}
-
-func applyUserNullableFields(user *models.User, bio, dob, city, phone sql.NullString, avatarPhotoID sql.NullInt32) {
-	user.Bio = StringPtr(bio)
-	user.DOB = StringPtr(dob)
-	user.City = StringPtr(city)
-	user.Phone = StringPtr(phone)
-	user.AvatarPhotoID = Int32Ptr(avatarPhotoID)
 }
 
 func taskWriteError(operation string, err error) error {

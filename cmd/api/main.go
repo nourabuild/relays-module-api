@@ -14,9 +14,9 @@ import (
 
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/nourabuild/relays-api/internal/app"
+	"github.com/nourabuild/relays-api/internal/sdk/debug"
 	"github.com/nourabuild/relays-api/internal/sdk/sqldb"
 	"github.com/nourabuild/relays-api/internal/services/jwt"
-	"github.com/nourabuild/relays-api/internal/services/mailtrap"
 	"github.com/nourabuild/relays-api/internal/services/sentry"
 )
 
@@ -48,40 +48,38 @@ func run(logger *slog.Logger) error {
 	sentryService := sentry.NewSentryService()
 	defer sentryService.Close()
 
-	// 5. Initialize JWT service
-	jwtService := jwt.NewTokenService()
+	// 5. Initialize JWT service (refuses placeholder/missing secrets)
+	jwtService, err := jwt.NewTokenService()
+	if err != nil {
+		return fmt.Errorf("jwt service: %w", err)
+	}
 
-	// 6. Initialize Mailtrap service
-	emailService := mailtrap.NewMailtrapService()
-
-	// 8. App Initialization
-	iamApp := app.NewApp(
+	// 6. App Initialization
+	relaysApp := app.NewApp(
 		sqlService,
 		sentryService,
 		jwtService,
-		emailService,
 	)
 
-	// 9. Setup Gin router
-
-	// 10. Modern Server with configured timeouts
+	// 7. Server with configured timeouts
 	srv := &http.Server{
 		Addr:         ":" + getEnv("PORT", "10267"),
-		Handler:      iamApp.RegisterRoutes(),
+		Handler:      relaysApp.RegisterRoutes(),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
 	}
 
-	// debugSrv := &http.Server{
-	// 	Addr:         ":" + getEnv("DEBUG_PORT", "4000"),
-	// 	Handler:      debug.Mux(),
-	// 	IdleTimeout:  time.Minute,
-	// 	ReadTimeout:  5 * time.Second,
-	// 	WriteTimeout: 10 * time.Second,
-	// 	ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
-	// }
+	// 8. Debug/pprof server, loopback only: never expose beyond the host/pod.
+	debugSrv := &http.Server{
+		Addr:         "127.0.0.1:" + getEnv("DEBUG_PORT", "4000"),
+		Handler:      debug.Mux(),
+		IdleTimeout:  time.Minute,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		ErrorLog:     slog.NewLogLogger(logger.Handler(), slog.LevelError),
+	}
 
 	wg.Go(func() {
 		logger.Info("server starting", "addr", srv.Addr, "build", build)
@@ -91,14 +89,14 @@ func run(logger *slog.Logger) error {
 		}
 	})
 
-	// wg.Go(func() {
-	// 	logger.Info("debug server starting", "addr", debugSrv.Addr)
-	// 	if err := debugSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-	// 		logger.Error("debug server", "error", err)
-	// 	}
-	// })
+	wg.Go(func() {
+		logger.Info("debug server starting", "addr", debugSrv.Addr)
+		if err := debugSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Error("debug server", "error", err)
+		}
+	})
 
-	// 7. Graceful Shutdown Wait
+	// 9. Graceful Shutdown Wait
 	<-ctx.Done()
 	logger.Info("shutting down gracefully")
 
@@ -109,9 +107,9 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("shutdown: %w", err)
 	}
 
-	// if err := debugSrv.Shutdown(shutdownCtx); err != nil {
-	// 	logger.Error("debug server shutdown", "error", err)
-	// }
+	if err := debugSrv.Shutdown(shutdownCtx); err != nil {
+		logger.Error("debug server shutdown", "error", err)
+	}
 
 	logger.Info("shutdown complete")
 	return nil

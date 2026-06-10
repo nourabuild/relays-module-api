@@ -8,13 +8,22 @@ import (
 	gojwt "github.com/golang-jwt/jwt/v5"
 )
 
-func TestNewTokenServiceNormalizesQuotedAccessSecret(t *testing.T) {
-	const secret = "your-access-token-secret"
-	t.Setenv("JWT_ACCESS_TOKEN_SECRET", `"`+secret+`"`)
-	t.Setenv("JWT_ISSUER", "your-app-name")
+const (
+	testSecret = "test-secret-0f1e2d3c4b5a69788796a5b4c3d2e1f0"
+	testIssuer = "relays-test"
+)
 
-	tokenString := signAccessToken(t, secret, "27")
-	claims, err := NewTokenService().ParseAccessToken(context.Background(), tokenString)
+func TestNewTokenServiceNormalizesQuotedAccessSecret(t *testing.T) {
+	t.Setenv("JWT_ACCESS_TOKEN_SECRET", `"`+testSecret+`"`)
+	t.Setenv("JWT_ISSUER", testIssuer)
+
+	service, err := NewTokenService()
+	if err != nil {
+		t.Fatalf("NewTokenService returned error: %v", err)
+	}
+
+	tokenString := signAccessToken(t, testSecret, "27")
+	claims, err := service.ParseAccessToken(context.Background(), tokenString)
 	if err != nil {
 		t.Fatalf("ParseAccessToken returned error: %v", err)
 	}
@@ -23,14 +32,36 @@ func TestNewTokenServiceNormalizesQuotedAccessSecret(t *testing.T) {
 	}
 }
 
-func TestEnvOrDefaultNormalizesMatchingQuotes(t *testing.T) {
-	t.Setenv("QUOTED_DOUBLE", `"value"`)
-	t.Setenv("QUOTED_SINGLE", `'value'`)
+func TestNewTokenServiceRejectsBadConfig(t *testing.T) {
+	cases := []struct {
+		name   string
+		secret string
+		issuer string
+	}{
+		{"empty secret", "", testIssuer},
+		{"placeholder secret", "your-access-token-secret", testIssuer},
+		{"short secret", "too-short", testIssuer},
+		{"empty issuer", testSecret, ""},
+		{"placeholder issuer", testSecret, "your-app-name"},
+	}
 
-	if got := envOrDefault("QUOTED_DOUBLE", "fallback"); got != "value" {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("JWT_ACCESS_TOKEN_SECRET", tc.secret)
+			t.Setenv("JWT_ISSUER", tc.issuer)
+
+			if _, err := NewTokenService(); err == nil {
+				t.Fatal("NewTokenService accepted invalid config, want error")
+			}
+		})
+	}
+}
+
+func TestNormalizeEnvValueStripsMatchingQuotes(t *testing.T) {
+	if got := normalizeEnvValue(`"value"`); got != "value" {
 		t.Fatalf("double-quoted value = %q, want value", got)
 	}
-	if got := envOrDefault("QUOTED_SINGLE", "fallback"); got != "value" {
+	if got := normalizeEnvValue(`'value'`); got != "value" {
 		t.Fatalf("single-quoted value = %q, want value", got)
 	}
 }
@@ -42,7 +73,7 @@ func signAccessToken(t *testing.T, secret, subject string) string {
 	claims := Claims{
 		RegisteredClaims: gojwt.RegisteredClaims{
 			Subject:   subject,
-			Issuer:    "your-app-name",
+			Issuer:    testIssuer,
 			IssuedAt:  gojwt.NewNumericDate(now),
 			ExpiresAt: gojwt.NewNumericDate(now.Add(15 * time.Minute)),
 			NotBefore: gojwt.NewNumericDate(now),

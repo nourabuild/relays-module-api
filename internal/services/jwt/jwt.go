@@ -30,21 +30,37 @@ type TokenService struct {
 	issuer    string
 }
 
-func NewTokenService() *TokenService {
-	issuer := envOrDefault("JWT_ISSUER", "your-app-name")
-	secret := envOrDefault("JWT_ACCESS_TOKEN_SECRET", "your-access-token-secret")
+// minSecretLength rejects secrets too short to resist offline brute force
+// of HS256 signatures.
+const minSecretLength = 32
+
+// placeholderSecrets are template defaults that must never reach production;
+// accepting one would let anyone who has seen the template forge tokens.
+var placeholderSecrets = map[string]struct{}{
+	"your-access-token-secret":  {},
+	"your-refresh-token-secret": {},
+	"changeme":                  {},
+	"secret":                    {},
+}
+
+func NewTokenService() (*TokenService, error) {
+	secret := normalizeEnvValue(os.Getenv("JWT_ACCESS_TOKEN_SECRET"))
+	if _, isPlaceholder := placeholderSecrets[secret]; secret == "" || isPlaceholder {
+		return nil, errors.New("JWT_ACCESS_TOKEN_SECRET must be set to the secret shared with the auth service (placeholder or empty value rejected)")
+	}
+	if len(secret) < minSecretLength {
+		return nil, fmt.Errorf("JWT_ACCESS_TOKEN_SECRET must be at least %d characters, got %d", minSecretLength, len(secret))
+	}
+
+	issuer := normalizeEnvValue(os.Getenv("JWT_ISSUER"))
+	if issuer == "" || issuer == "your-app-name" {
+		return nil, errors.New("JWT_ISSUER must be set to the issuer used by the auth service")
+	}
 
 	return &TokenService{
 		secretKey: []byte(secret),
 		issuer:    issuer,
-	}
-}
-
-func envOrDefault(key, fallback string) string {
-	if value := normalizeEnvValue(os.Getenv(key)); value != "" {
-		return value
-	}
-	return fallback
+	}, nil
 }
 
 func normalizeEnvValue(value string) string {
