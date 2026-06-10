@@ -1,68 +1,64 @@
-# Project service
+# Relays Service
 
-<img width="718" height="656" alt="image" src="https://github.com/user-attachments/assets/b2326c6e-354a-42d3-8987-40e4c77738bb" />
+Task-delegation API for the Noura platform. Users create tasks assigned to
+*other* users (self-assignment is rejected), track them through an
+`open → done / cancelled` lifecycle, and chat per-task over REST and
+WebSocket.
 
-cmd/api/main.go - serves as the entry point responsible for service initialization and graceful shutdown
-internal/app - handles request handlers and route registration
-internal/sdk - tools
-internal/services - encapsulating service capabilities
+Authentication is delegated to the external auth service: this service
+verifies the HS256 JWTs the auth service signs and lazily mirrors users into
+its own database on first request.
 
-Dependency Injection, Service-Oriented Design
+## Vocabulary
 
-## Goals
+The two task lists are named from the caller's point of view:
 
-This repository template MUST provide a standardized foundation for microservices with:
+- `GET /api/v1/task/todos` — tasks **you created** and delegated to others
+- `GET /api/v1/task/expectations` — tasks **assigned to you**
 
-- **CI/CD Ready** - Pre-configured pipelines for continuous integration and deployment
-- **Observability** - Built-in metrics, logging, and tracing support
-- **Production Features** - Health checks, graceful shutdown, and configuration management
+## Status lifecycle
 
-## Getting Started
+| From \ To   | open           | done          | cancelled     |
+|-------------|----------------|---------------|---------------|
+| `open`      | creator only   | assignee only | creator only  |
+| `done`      | creator only   | 409 conflict  | 409 conflict  |
+| `cancelled` | creator only   | 409 conflict  | 409 conflict  |
 
-These instructions will get you a copy of the project up and running on your local machine for development and testing purposes. See deployment for notes on how to deploy the project on a live system.
+Terminal tasks (`done`/`cancelled`) cannot be edited; the creator must reopen
+them first. Other users' profiles are serialized as public shapes only (no
+email, phone, DOB, or city).
 
-## MakeFile
+## Layout
 
-Run build make command with tests
+- `cmd/api/main.go` — entry point: service wiring, HTTP server, loopback
+  debug/pprof server, graceful shutdown
+- `internal/app` — Gin handlers and route registration
+- `internal/sdk` — middleware, models, SQL repository, migrations
+- `internal/services` — JWT verification, WebSocket rooms, Sentry
+
+## Running locally
+
 ```bash
-make all
+cp .env.example .env   # then fill in the values
+make run               # starts the API on $PORT (default 10267)
 ```
 
-Build the application
+The service **refuses to start** without a real `JWT_ACCESS_TOKEN_SECRET`
+and `JWT_ISSUER` (placeholder values are rejected). Database connections
+default to `sslmode=require`; set `BLUEPRINT_DB_SSLMODE=disable` only for a
+local Postgres without TLS.
+
+## Make targets
+
 ```bash
-make build
+make run             # kill anything on $PORT and start the API
+make test            # run the test suite (DB tests need Docker)
+make lint            # go vet + staticcheck
+make tidy            # go mod tidy + vendor
+make migrate-up      # apply migrations (uses DATABASE_URL)
+make migrate-down    # roll back migrations
+make migrate-create  # create a new migration pair
 ```
 
-Run the application
-```bash
-make run
-```
-Create DB container
-```bash
-make docker-run
-```
-
-Shutdown DB Container
-```bash
-make docker-down
-```
-
-DB Integrations Test:
-```bash
-make itest
-```
-
-Live reload the application:
-```bash
-make watch
-```
-
-Run the test suite:
-```bash
-make test
-```
-
-Clean up binary from the last build:
-```bash
-make clean
-```
+CI (GitHub Actions) runs build, vet, staticcheck, tests, and govulncheck on
+every push and pull request.

@@ -87,7 +87,7 @@ migrate-drop:
 
 # ==============================================================================
 
-# go version -m $(which staticcheck) | head -n 1 | awk '{print $NF}'
+# Tests
 
-revert:
-	git reset --hard HEAD~1
+test:
+	go test -count=1 ./internal/... ./cmd/...

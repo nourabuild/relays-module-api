@@ -37,7 +37,7 @@ func (a *App) HandleMe(c *gin.Context) {
 		}
 		req.Header.Set("Authorization", c.GetHeader("Authorization"))
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := authHTTPClient.Do(req)
 		if err != nil {
 			a.toSentry(c, "me", "http", sentry.LevelError, err)
 			writeError(c, http.StatusInternalServerError, "internal_auth_request_error", nil)

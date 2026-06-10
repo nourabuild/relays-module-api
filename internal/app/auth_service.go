@@ -1,9 +1,15 @@
 package app
 
 import (
+	"net/http"
 	"os"
 	"strings"
+	"time"
 )
+
+// authHTTPClient bounds calls to the auth service so a hung upstream cannot
+// hold handler goroutines open indefinitely.
+var authHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 const (
 	defaultAuthAPIBaseURL = "https://api.auth.noura.software"
