@@ -14,7 +14,7 @@ import (
 func TestBroadcastTaskMessageSendsToTaskSubscribers(t *testing.T) {
 	t.Parallel()
 
-	service := NewService()
+	service := NewService(nil)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := service.ServeTask(w, r, "task-1"); err != nil {
 			t.Logf("serve websocket: %v", err)

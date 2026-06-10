@@ -9,6 +9,7 @@ import (
 
 	gojwt "github.com/golang-jwt/jwt/v5"
 	gorillawebsocket "github.com/gorilla/websocket"
+	"github.com/nourabuild/relays-api/internal/sdk/config"
 	"github.com/nourabuild/relays-api/internal/sdk/models"
 	"github.com/nourabuild/relays-api/internal/sdk/sqldb"
 	"github.com/nourabuild/relays-api/internal/services/jwt"
@@ -21,15 +22,13 @@ func TestTaskChatWebSocketRouteUpgradesAuthorizedTask(t *testing.T) {
 		userID = "21"
 	)
 
-	setTestJWTEnv(t)
-
-	app := NewApp(taskChatWebSocketDB{
+	app := NewApp(config.Config{}, taskChatWebSocketDB{
 		task: models.Task{
 			ID:           taskID,
 			CreatedByID:  userID,
 			AssignedToID: "27",
 		},
-	}, nil, newTestTokenService(t))
+	}, nil, newTestTokenService())
 
 	server := httptest.NewServer(app.RegisterRoutes())
 	t.Cleanup(server.Close)

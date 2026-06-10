@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/nourabuild/relays-api/internal/sdk/config"
 	"github.com/nourabuild/relays-api/internal/sdk/models"
 	"github.com/nourabuild/relays-api/internal/sdk/sqldb"
 )
@@ -23,12 +24,10 @@ func (db searchFakeDB) SearchUsers(ctx context.Context, query string) ([]models.
 // TestSearchUsersHidesPII pins the decision that other users' profiles expose
 // only public fields: no email, phone, DOB, city, or admin flag.
 func TestSearchUsersHidesPII(t *testing.T) {
-	setTestJWTEnv(t)
-
 	phone := "+1-555-0100"
 	dob := "1990-01-01"
 	city := "Berlin"
-	app := NewApp(searchFakeDB{
+	app := NewApp(config.Config{}, searchFakeDB{
 		users: []models.User{{
 			ID:      "27",
 			Name:    "John Doe",
@@ -39,7 +38,7 @@ func TestSearchUsersHidesPII(t *testing.T) {
 			City:    &city,
 			IsAdmin: true,
 		}},
-	}, nil, newTestTokenService(t))
+	}, nil, newTestTokenService())
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/user/search?q=john", nil)
 	req.Header.Set("Authorization", "Bearer "+signTestAccessToken(t, testJWTSecret, testStrangerID))

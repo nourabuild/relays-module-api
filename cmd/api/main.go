@@ -14,6 +14,7 @@ import (
 
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/nourabuild/relays-api/internal/app"
+	"github.com/nourabuild/relays-api/internal/sdk/config"
 	"github.com/nourabuild/relays-api/internal/sdk/debug"
 	"github.com/nourabuild/relays-api/internal/sdk/sqldb"
 	"github.com/nourabuild/relays-api/internal/services/jwt"
@@ -40,30 +41,35 @@ func run(logger *slog.Logger) error {
 	// 2. Resource Management with WaitGroups
 	var wg sync.WaitGroup
 
-	// 3. Initialize Database service
-	sqlService := sqldb.New()
+	// 3. Load and validate all configuration up front; a misconfigured
+	// service must not start.
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("config: %w", err)
+	}
+
+	// 4. Initialize Database service
+	sqlService, err := sqldb.New(cfg.DB)
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
 	defer sqlService.Close()
 
-	// 4. Initialize Sentry for error tracking
-	sentryService := sentry.NewSentryService()
+	// 5. Initialize Sentry for error tracking
+	sentryService := sentry.NewSentryService(cfg.Sentry)
 	defer sentryService.Close()
-
-	// 5. Initialize JWT service (refuses placeholder/missing secrets)
-	jwtService, err := jwt.NewTokenService()
-	if err != nil {
-		return fmt.Errorf("jwt service: %w", err)
-	}
 
 	// 6. App Initialization
 	relaysApp := app.NewApp(
+		cfg,
 		sqlService,
 		sentryService,
-		jwtService,
+		jwt.NewTokenService(cfg.JWT.Secret, cfg.JWT.Issuer),
 	)
 
 	// 7. Server with configured timeouts
 	srv := &http.Server{
-		Addr:         ":" + getEnv("PORT", "10267"),
+		Addr:         ":" + cfg.HTTP.Port,
 		Handler:      relaysApp.RegisterRoutes(),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  5 * time.Second,
@@ -73,7 +79,7 @@ func run(logger *slog.Logger) error {
 
 	// 8. Debug/pprof server, loopback only: never expose beyond the host/pod.
 	debugSrv := &http.Server{
-		Addr:         "127.0.0.1:" + getEnv("DEBUG_PORT", "4000"),
+		Addr:         "127.0.0.1:" + cfg.HTTP.DebugPort,
 		Handler:      debug.Mux(),
 		IdleTimeout:  time.Minute,
 		ReadTimeout:  5 * time.Second,
@@ -113,11 +119,4 @@ func run(logger *slog.Logger) error {
 
 	logger.Info("shutdown complete")
 	return nil
-}
-
-func getEnv(key, fallback string) string {
-	if v, ok := os.LookupEnv(key); ok {
-		return v
-	}
-	return fallback
 }

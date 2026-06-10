@@ -58,12 +58,15 @@ type CreateTask struct {
 	DelegatedFromTaskID *string    `json:"delegated_from_task_id,omitempty"`
 }
 
+// UpdateTask uses Optional for nullable columns: an omitted field is left
+// unchanged, an explicit JSON null clears it. assigned_to_id and title are
+// NOT NULL and therefore never clearable.
 type UpdateTask struct {
-	AssignedToID        *string    `json:"assigned_to_id,omitempty"`
-	Title               *string    `json:"title,omitempty"`
-	Description         *string    `json:"description,omitempty"`
-	DueAt               *time.Time `json:"due_at,omitempty"`
-	DelegatedFromTaskID *string    `json:"delegated_from_task_id,omitempty"`
+	AssignedToID        *string             `json:"assigned_to_id,omitempty"`
+	Title               *string             `json:"title,omitempty"`
+	Description         Optional[string]    `json:"description"`
+	DueAt               Optional[time.Time] `json:"due_at"`
+	DelegatedFromTaskID Optional[string]    `json:"delegated_from_task_id"`
 }
 
 type UpdateTaskStatus struct {

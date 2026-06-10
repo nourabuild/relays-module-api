@@ -1,6 +1,7 @@
 package app
 
 import (
+	"github.com/nourabuild/relays-api/internal/sdk/config"
 	"github.com/nourabuild/relays-api/internal/sdk/sqldb"
 	"github.com/nourabuild/relays-api/internal/services/jwt"
 	"github.com/nourabuild/relays-api/internal/services/sentry"
@@ -8,6 +9,7 @@ import (
 )
 
 type App struct {
+	cfg    config.Config
 	db     sqldb.Service
 	sentry *sentry.SentryService
 	jwt    *jwt.TokenService
@@ -15,14 +17,16 @@ type App struct {
 }
 
 func NewApp(
+	cfg config.Config,
 	db sqldb.Service,
 	sentry *sentry.SentryService,
 	jwt *jwt.TokenService,
 ) *App {
 	return &App{
+		cfg:    cfg,
 		db:     db,
 		sentry: sentry,
 		jwt:    jwt,
-		ws:     websocket.NewService(),
+		ws:     websocket.NewService(cfg.CORS.AllowOrigins),
 	}
 }

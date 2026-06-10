@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/nourabuild/relays-api/internal/sdk/config"
 	"github.com/nourabuild/relays-api/internal/sdk/models"
 	"github.com/nourabuild/relays-api/internal/sdk/sqldb"
 	"github.com/nourabuild/relays-api/internal/services/jwt"
@@ -22,12 +23,6 @@ const (
 	testAssigneeID = "assignee-27"
 	testStrangerID = "stranger-99"
 )
-
-func setTestJWTEnv(t *testing.T) {
-	t.Helper()
-	t.Setenv("JWT_ACCESS_TOKEN_SECRET", testJWTSecret)
-	t.Setenv("JWT_ISSUER", testIssuer)
-}
 
 // statusFakeDB serves a single task and applies status updates in memory.
 type statusFakeDB struct {
@@ -52,26 +47,20 @@ func (db statusFakeDB) UpdateTask(ctx context.Context, taskID string, input mode
 	return db.task, nil
 }
 
-func newTestTokenService(t *testing.T) *jwt.TokenService {
-	t.Helper()
-	tokenService, err := jwt.NewTokenService()
-	if err != nil {
-		t.Fatalf("NewTokenService: %v", err)
-	}
-	return tokenService
+func newTestTokenService() *jwt.TokenService {
+	return jwt.NewTokenService(testJWTSecret, testIssuer)
 }
 
 func newStatusTestApp(t *testing.T, currentStatus string) *App {
 	t.Helper()
-	setTestJWTEnv(t)
-	return NewApp(statusFakeDB{
+	return NewApp(config.Config{}, statusFakeDB{
 		task: models.Task{
 			ID:           testTaskID,
 			CreatedByID:  testCreatorID,
 			AssignedToID: testAssigneeID,
 			Status:       currentStatus,
 		},
-	}, nil, newTestTokenService(t))
+	}, nil, newTestTokenService())
 }
 
 func patchTaskStatus(t *testing.T, app *App, actorID, body string) *httptest.ResponseRecorder {

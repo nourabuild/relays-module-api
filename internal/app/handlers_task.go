@@ -108,7 +108,7 @@ func (a *App) HandleUpdateTask(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_task", details)
 		return
 	}
-	if !a.canUseDelegatedFromTask(c, input.DelegatedFromTaskID, userID) {
+	if !a.canUseDelegatedFromTask(c, input.DelegatedFromTaskID.Value, userID) {
 		return
 	}
 
@@ -248,13 +248,13 @@ func normalizeUpdateTaskInput(input *models.UpdateTask) {
 		title := strings.TrimSpace(*input.Title)
 		input.Title = &title
 	}
-	if input.Description != nil {
-		description := strings.TrimSpace(*input.Description)
-		input.Description = &description
+	if input.Description.Value != nil {
+		description := strings.TrimSpace(*input.Description.Value)
+		input.Description.Value = &description
 	}
-	if input.DelegatedFromTaskID != nil {
-		delegatedFromTaskID := strings.TrimSpace(*input.DelegatedFromTaskID)
-		input.DelegatedFromTaskID = &delegatedFromTaskID
+	if input.DelegatedFromTaskID.Value != nil {
+		delegatedFromTaskID := strings.TrimSpace(*input.DelegatedFromTaskID.Value)
+		input.DelegatedFromTaskID.Value = &delegatedFromTaskID
 	}
 }
 
@@ -286,8 +286,9 @@ func validateUpdateTask(input models.UpdateTask, creatorID string) map[string]st
 	if input.Title != nil && *input.Title == "" {
 		details["title"] = "title cannot be empty"
 	}
-	if input.DelegatedFromTaskID != nil && *input.DelegatedFromTaskID == "" {
-		details["delegated_from_task_id"] = "delegated_from_task_id cannot be empty"
+	// Explicit null clears the field; an empty string is rejected.
+	if input.DelegatedFromTaskID.Value != nil && *input.DelegatedFromTaskID.Value == "" {
+		details["delegated_from_task_id"] = "delegated_from_task_id cannot be empty (use null to clear)"
 	}
 	return details
 }

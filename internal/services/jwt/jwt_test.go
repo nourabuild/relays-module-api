@@ -2,6 +2,7 @@ package jwt
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -13,17 +14,12 @@ const (
 	testIssuer = "relays-test"
 )
 
-func TestNewTokenServiceNormalizesQuotedAccessSecret(t *testing.T) {
-	t.Setenv("JWT_ACCESS_TOKEN_SECRET", `"`+testSecret+`"`)
-	t.Setenv("JWT_ISSUER", testIssuer)
+func TestParseAccessTokenAcceptsValidToken(t *testing.T) {
+	t.Parallel()
 
-	service, err := NewTokenService()
-	if err != nil {
-		t.Fatalf("NewTokenService returned error: %v", err)
-	}
+	service := NewTokenService(testSecret, testIssuer)
 
-	tokenString := signAccessToken(t, testSecret, "27")
-	claims, err := service.ParseAccessToken(context.Background(), tokenString)
+	claims, err := service.ParseAccessToken(context.Background(), signAccessToken(t, testSecret, "27"))
 	if err != nil {
 		t.Fatalf("ParseAccessToken returned error: %v", err)
 	}
@@ -32,37 +28,36 @@ func TestNewTokenServiceNormalizesQuotedAccessSecret(t *testing.T) {
 	}
 }
 
-func TestNewTokenServiceRejectsBadConfig(t *testing.T) {
-	cases := []struct {
-		name   string
-		secret string
-		issuer string
-	}{
-		{"empty secret", "", testIssuer},
-		{"placeholder secret", "your-access-token-secret", testIssuer},
-		{"short secret", "too-short", testIssuer},
-		{"empty issuer", testSecret, ""},
-		{"placeholder issuer", testSecret, "your-app-name"},
-	}
+func TestParseAccessTokenRejectsWrongSecret(t *testing.T) {
+	t.Parallel()
 
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("JWT_ACCESS_TOKEN_SECRET", tc.secret)
-			t.Setenv("JWT_ISSUER", tc.issuer)
+	service := NewTokenService(testSecret, testIssuer)
 
-			if _, err := NewTokenService(); err == nil {
-				t.Fatal("NewTokenService accepted invalid config, want error")
-			}
-		})
+	_, err := service.ParseAccessToken(context.Background(),
+		signAccessToken(t, "wrong-secret-0f1e2d3c4b5a69788796a5b4", "27"))
+	if !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("expected ErrInvalidToken, got %v", err)
 	}
 }
 
-func TestNormalizeEnvValueStripsMatchingQuotes(t *testing.T) {
-	if got := normalizeEnvValue(`"value"`); got != "value" {
-		t.Fatalf("double-quoted value = %q, want value", got)
+func TestParseAccessTokenRejectsWrongIssuer(t *testing.T) {
+	t.Parallel()
+
+	service := NewTokenService(testSecret, "other-issuer")
+
+	_, err := service.ParseAccessToken(context.Background(), signAccessToken(t, testSecret, "27"))
+	if !errors.Is(err, ErrInvalidClaims) {
+		t.Fatalf("expected ErrInvalidClaims, got %v", err)
 	}
-	if got := normalizeEnvValue(`'value'`); got != "value" {
-		t.Fatalf("single-quoted value = %q, want value", got)
+}
+
+func TestParseAccessTokenRejectsEmptyToken(t *testing.T) {
+	t.Parallel()
+
+	service := NewTokenService(testSecret, testIssuer)
+
+	if _, err := service.ParseAccessToken(context.Background(), ""); !errors.Is(err, ErrTokenNotFound) {
+		t.Fatalf("expected ErrTokenNotFound, got %v", err)
 	}
 }
 

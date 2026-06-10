@@ -3,7 +3,6 @@ package websocket
 
 import (
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -42,9 +41,9 @@ type client struct {
 	send    chan Event
 }
 
-func NewService() *Service {
-	allowedOrigins := parseOrigins(os.Getenv("CORS_ALLOW_ORIGINS"))
-
+// NewService creates a per-task chat hub. An empty origin allowlist permits
+// all origins (token auth still applies).
+func NewService(allowedOrigins []string) *Service {
 	return &Service{
 		upgrader: gorillawebsocket.Upgrader{
 			ReadBufferSize:  maxMessageSize,
@@ -185,21 +184,4 @@ func checkOrigin(allowedOrigins []string) func(*http.Request) bool {
 
 		return false
 	}
-}
-
-func parseOrigins(raw string) []string {
-	if raw == "" {
-		return nil
-	}
-
-	parts := strings.Split(raw, ",")
-	origins := make([]string, 0, len(parts))
-	for _, part := range parts {
-		origin := strings.TrimSpace(part)
-		if origin != "" {
-			origins = append(origins, origin)
-		}
-	}
-
-	return origins
 }

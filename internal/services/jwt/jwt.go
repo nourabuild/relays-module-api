@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -30,52 +28,13 @@ type TokenService struct {
 	issuer    string
 }
 
-// minSecretLength rejects secrets too short to resist offline brute force
-// of HS256 signatures.
-const minSecretLength = 32
-
-// placeholderSecrets are template defaults that must never reach production;
-// accepting one would let anyone who has seen the template forge tokens.
-var placeholderSecrets = map[string]struct{}{
-	"your-access-token-secret":  {},
-	"your-refresh-token-secret": {},
-	"changeme":                  {},
-	"secret":                    {},
-}
-
-func NewTokenService() (*TokenService, error) {
-	secret := normalizeEnvValue(os.Getenv("JWT_ACCESS_TOKEN_SECRET"))
-	if _, isPlaceholder := placeholderSecrets[secret]; secret == "" || isPlaceholder {
-		return nil, errors.New("JWT_ACCESS_TOKEN_SECRET must be set to the secret shared with the auth service (placeholder or empty value rejected)")
-	}
-	if len(secret) < minSecretLength {
-		return nil, fmt.Errorf("JWT_ACCESS_TOKEN_SECRET must be at least %d characters, got %d", minSecretLength, len(secret))
-	}
-
-	issuer := normalizeEnvValue(os.Getenv("JWT_ISSUER"))
-	if issuer == "" || issuer == "your-app-name" {
-		return nil, errors.New("JWT_ISSUER must be set to the issuer used by the auth service")
-	}
-
+// NewTokenService verifies tokens signed by the auth service. The secret and
+// issuer are validated by config.Load before they reach this constructor.
+func NewTokenService(secret, issuer string) *TokenService {
 	return &TokenService{
 		secretKey: []byte(secret),
 		issuer:    issuer,
-	}, nil
-}
-
-func normalizeEnvValue(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) < 2 {
-		return value
 	}
-
-	first := value[0]
-	last := value[len(value)-1]
-	if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-		return value[1 : len(value)-1]
-	}
-
-	return value
 }
 
 func (s *TokenService) ParseAccessToken(ctx context.Context, tokenString string) (*Claims, error) {

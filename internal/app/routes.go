@@ -14,9 +14,9 @@ func (a *App) RegisterRoutes() *gin.Engine {
 	router := gin.New()
 
 	// Global middleware chain
-	router.Use(gin.Recovery())      // Panic recovery
-	router.Use(middleware.Logger()) // Custom slog logger
-	router.Use(middleware.CORS())   // CORS support
+	router.Use(gin.Recovery())              // Panic recovery
+	router.Use(middleware.Logger())         // Custom slog logger
+	router.Use(middleware.CORS(a.cfg.CORS)) // CORS support
 
 	// API v1 route group
 	v1 := router.Group("/api/v1")

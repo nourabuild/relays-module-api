@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nourabuild/relays-api/internal/sdk/middleware"
@@ -12,6 +13,10 @@ import (
 	"github.com/nourabuild/relays-api/internal/sdk/sqldb"
 	"github.com/nourabuild/relays-api/internal/services/sentry"
 )
+
+// authHTTPClient bounds calls to the auth service so a hung upstream cannot
+// hold handler goroutines open indefinitely.
+var authHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 func (a *App) HandleMe(c *gin.Context) {
 	userID, err := middleware.GetClaims(c)
@@ -29,7 +34,7 @@ func (a *App) HandleMe(c *gin.Context) {
 		}
 
 		// User not found locally — fetch from auth service and create
-		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, authServiceMeURL(), nil)
+		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, a.cfg.Auth.MeURL, nil)
 		if err != nil {
 			a.toSentry(c, "me", "http", sentry.LevelError, err)
 			writeError(c, http.StatusInternalServerError, "internal_auth_request_error", nil)

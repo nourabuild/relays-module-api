@@ -7,12 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"strconv"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "github.com/joho/godotenv/autoload"
+	"github.com/nourabuild/relays-api/internal/sdk/config"
 	"github.com/nourabuild/relays-api/internal/sdk/models"
 )
 
@@ -63,38 +62,27 @@ type Service interface {
 }
 
 type service struct {
-	db *sql.DB
+	db       *sql.DB
+	database string
 }
 
-var (
-	database   = os.Getenv("BLUEPRINT_DB_DATABASE")
-	password   = os.Getenv("BLUEPRINT_DB_PASSWORD")
-	username   = os.Getenv("BLUEPRINT_DB_USERNAME")
-	port       = os.Getenv("BLUEPRINT_DB_PORT")
-	host       = os.Getenv("BLUEPRINT_DB_HOST")
-	schema     = os.Getenv("BLUEPRINT_DB_SCHEMA")
-	sslmode    = os.Getenv("BLUEPRINT_DB_SSLMODE")
-	dbInstance *service
-)
-
-func New() Service {
-	// Reuse Connection
-	if dbInstance != nil {
-		return dbInstance
-	}
-	// Encrypted connections by default; cleartext requires an explicit opt-out.
-	if sslmode == "" {
-		sslmode = "require"
-	}
-	connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s&search_path=%s", username, password, host, port, database, sslmode, schema)
+func New(cfg config.DB) (Service, error) {
+	connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s&search_path=%s",
+		cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode, cfg.Schema)
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("opening database: %w", err)
 	}
-	dbInstance = &service{
-		db: db,
-	}
-	return dbInstance
+
+	// Bound the pool: the driver default is unlimited open connections.
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	return &service{
+		db:       db,
+		database: cfg.Database,
+	}, nil
 }
 
 // Health checks the health of the database connection by pinging the database.
@@ -157,7 +145,7 @@ func (s *service) Health() map[string]string {
 // If the connection is successfully closed, it returns nil.
 // If an error occurs while closing the connection, it returns the error.
 func (s *service) Close() error {
-	log.Printf("Disconnected from database: %s", database)
+	log.Printf("Disconnected from database: %s", s.database)
 	return s.db.Close()
 }
 

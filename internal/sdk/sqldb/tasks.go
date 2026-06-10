@@ -140,13 +140,16 @@ func (s *service) GetTask(ctx context.Context, taskID string) (models.Task, erro
 }
 
 func (s *service) UpdateTask(ctx context.Context, taskID string, input models.UpdateTask) (models.Task, error) {
+	// Nullable columns use a flag + value pair so an explicit null in the
+	// request clears the column, while an absent field leaves it unchanged
+	// (COALESCE cannot tell those apart).
 	const query = `
 		UPDATE todos.tasks
 		SET assigned_to_id = COALESCE($2, assigned_to_id),
 		    title = COALESCE($3, title),
-		    description = COALESCE($4, description),
-		    due_at = COALESCE($5, due_at),
-		    delegated_from_task_id = COALESCE($6::uuid, delegated_from_task_id),
+		    description = CASE WHEN $4 THEN $5::text ELSE description END,
+		    due_at = CASE WHEN $6 THEN $7::timestamptz ELSE due_at END,
+		    delegated_from_task_id = CASE WHEN $8 THEN $9::uuid ELSE delegated_from_task_id END,
 		    updated_at = CURRENT_TIMESTAMP
 		WHERE id = $1
 		RETURNING id::text
@@ -157,9 +160,12 @@ func (s *service) UpdateTask(ctx context.Context, taskID string, input models.Up
 		taskID,
 		NullString(input.AssignedToID),
 		NullString(input.Title),
-		NullString(input.Description),
-		NullTime(input.DueAt),
-		NullString(input.DelegatedFromTaskID),
+		input.Description.Set,
+		NullString(input.Description.Value),
+		input.DueAt.Set,
+		NullTime(input.DueAt.Value),
+		input.DelegatedFromTaskID.Set,
+		NullString(input.DelegatedFromTaskID.Value),
 	).Scan(&updatedID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return models.Task{}, ErrDBNotFound

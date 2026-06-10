@@ -28,6 +28,10 @@ Terminal tasks (`done`/`cancelled`) cannot be edited; the creator must reopen
 them first. Other users' profiles are serialized as public shapes only (no
 email, phone, DOB, or city).
 
+`PATCH /api/v1/task/:task_id` treats omitted fields as unchanged; an explicit
+JSON `null` clears the nullable fields (`description`, `due_at`,
+`delegated_from_task_id`).
+
 ## Layout
 
 - `cmd/api/main.go` — entry point: service wiring, HTTP server, loopback

@@ -2,10 +2,10 @@
 package sentry
 
 import (
-	"os"
 	"time"
 
 	"github.com/getsentry/sentry-go"
+	"github.com/nourabuild/relays-api/internal/sdk/config"
 )
 
 const (
@@ -36,26 +36,20 @@ type SentryService struct {
 }
 
 // NewSentryService initializes Sentry and returns the service
-func NewSentryService() *SentryService {
-	env := os.Getenv("SENTRY_ENVIRONMENT")
-	if env == "" {
-		env = "development"
-	}
-
-	dsn := os.Getenv("SENTRY_DSN")
-	debug := env == "development"
+func NewSentryService(cfg config.Sentry) *SentryService {
+	debug := cfg.Environment == "development"
 	sampleRate := 1.0
 
 	_ = sentry.Init(sentry.ClientOptions{
-		Dsn:         dsn,
-		Environment: env,
+		Dsn:         cfg.DSN,
+		Environment: cfg.Environment,
 		Debug:       debug,
 		SampleRate:  sampleRate,
 	})
 
 	return &SentryService{
-		Dsn:         dsn,
-		Environment: env,
+		Dsn:         cfg.DSN,
+		Environment: cfg.Environment,
 		Debug:       debug,
 		SampleRate:  sampleRate,
 	}
