@@ -1,0 +1,14 @@
+# Dependencies resolve via go mod download only. Keeping vendor/ out of the
+# build context ensures a locally recreated vendor dir can never flip the
+# container build to -mod=vendor.
+vendor/
+
+# Never ship local secrets or dev tooling into the build context.
+.env
+.git
+.github
+.air.toml
+.golangci.yml
+tmp/
+main
+*.test
