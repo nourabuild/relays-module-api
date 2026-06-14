@@ -3,9 +3,9 @@ package app
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nourabuild/relays-api/internal/sdk/middleware"
@@ -13,6 +13,10 @@ import (
 	"github.com/nourabuild/relays-api/internal/sdk/sqldb"
 	"github.com/nourabuild/relays-api/internal/services/sentry"
 )
+
+// authHTTPClient bounds calls to the auth service so a hung upstream cannot
+// hold handler goroutines open indefinitely.
+var authHTTPClient = &http.Client{Timeout: 10 * time.Second}
 
 func (a *App) HandleMe(c *gin.Context) {
 	userID, err := middleware.GetClaims(c)
@@ -30,7 +34,7 @@ func (a *App) HandleMe(c *gin.Context) {
 		}
 
 		// User not found locally — fetch from auth service and create
-		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, authServiceMeURL(), nil)
+		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, a.cfg.Auth.MeURL, nil)
 		if err != nil {
 			a.toSentry(c, "me", "http", sentry.LevelError, err)
 			writeError(c, http.StatusInternalServerError, "internal_auth_request_error", nil)
@@ -38,7 +42,7 @@ func (a *App) HandleMe(c *gin.Context) {
 		}
 		req.Header.Set("Authorization", c.GetHeader("Authorization"))
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := authHTTPClient.Do(req)
 		if err != nil {
 			a.toSentry(c, "me", "http", sentry.LevelError, err)
 			writeError(c, http.StatusInternalServerError, "internal_auth_request_error", nil)
@@ -57,25 +61,6 @@ func (a *App) HandleMe(c *gin.Context) {
 			writeError(c, http.StatusInternalServerError, "internal_auth_decode_error", nil)
 			return
 		}
-
-		fmt.Printf("Creating local user for auth service user: %+v\n", authUser)
-
-		// Creating local user for auth service user:
-		// // User {
-		//   ID: 27
-		//   Name: "John Doe"
-		//   Account: "johndoe"
-		//   Email: "john@example.com"
-		//   Password: []
-		//   Bio: ""
-		//   DOB: ""
-		//   City: ""
-		//   Phone: ""
-		//   AvatarPhotoID: ""
-		//   IsAdmin: false
-		//   CreatedAt: 2026-02-06 17:30:25.246413 UTC
-		//   UpdatedAt: 2026-02-06 17:30:25.246413 UTC
-		// }
 
 		user, err = a.db.CreateUser(c.Request.Context(), models.NewUser{
 			ID:      authUser.ID,
@@ -105,7 +90,7 @@ func (a *App) HandleSearchUsers(c *gin.Context) {
 	// Get the search query parameter
 	query := c.Query("q")
 	if query == "" {
-		c.JSON(http.StatusOK, []models.User{})
+		c.JSON(http.StatusOK, []models.PublicUser{})
 		return
 	}
 
@@ -117,12 +102,13 @@ func (a *App) HandleSearchUsers(c *gin.Context) {
 		return
 	}
 
-	// Return empty array if no results
-	if users == nil {
-		users = []models.User{}
+	// Other users' profiles are public-shape only: no email/phone/DOB
+	profiles := make([]models.PublicUser, 0, len(users))
+	for _, user := range users {
+		profiles = append(profiles, models.PublicProfile(user))
 	}
 
-	c.JSON(http.StatusOK, users)
+	c.JSON(http.StatusOK, profiles)
 }
 
 func (a *App) HandleAccountLookup(c *gin.Context) {
@@ -148,5 +134,5 @@ func (a *App) HandleAccountLookup(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, user)
+	c.JSON(http.StatusOK, models.PublicProfile(user))
 }

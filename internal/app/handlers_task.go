@@ -93,6 +93,10 @@ func (a *App) HandleUpdateTask(c *gin.Context) {
 		writeError(c, http.StatusForbidden, "forbidden", nil)
 		return
 	}
+	if models.IsTerminalTaskStatus(task.Status) {
+		writeError(c, http.StatusConflict, "task_not_editable", map[string]string{"status": "task must be open to be edited"})
+		return
+	}
 
 	var input models.UpdateTask
 	if err := c.ShouldBindJSON(&input); err != nil {
@@ -104,7 +108,7 @@ func (a *App) HandleUpdateTask(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, "invalid_task", details)
 		return
 	}
-	if !a.canUseDelegatedFromTask(c, input.DelegatedFromTaskID, userID) {
+	if !a.canUseDelegatedFromTask(c, input.DelegatedFromTaskID.Value, userID) {
 		return
 	}
 
@@ -136,17 +140,26 @@ func (a *App) HandleUpdateTaskStatus(c *gin.Context) {
 
 	switch input.Status {
 	case models.TaskStatusDone:
+		if models.IsTerminalTaskStatus(task.Status) {
+			writeError(c, http.StatusConflict, "task_status_conflict", map[string]string{"status": "task is already " + task.Status})
+			return
+		}
 		if task.AssignedToID != userID {
 			writeError(c, http.StatusForbidden, "forbidden", nil)
 			return
 		}
 	case models.TaskStatusCancelled:
+		if models.IsTerminalTaskStatus(task.Status) {
+			writeError(c, http.StatusConflict, "task_status_conflict", map[string]string{"status": "task is already " + task.Status})
+			return
+		}
 		if task.CreatedByID != userID {
 			writeError(c, http.StatusForbidden, "forbidden", nil)
 			return
 		}
 	case models.TaskStatusOpen:
-		if !canAccessTask(task, userID) {
+		// Reopening (and re-asserting open) is reserved for the creator.
+		if task.CreatedByID != userID {
 			writeError(c, http.StatusForbidden, "forbidden", nil)
 			return
 		}
@@ -235,21 +248,22 @@ func normalizeUpdateTaskInput(input *models.UpdateTask) {
 		title := strings.TrimSpace(*input.Title)
 		input.Title = &title
 	}
-	if input.Description != nil {
-		description := strings.TrimSpace(*input.Description)
-		input.Description = &description
+	if input.Description.Value != nil {
+		description := strings.TrimSpace(*input.Description.Value)
+		input.Description.Value = &description
 	}
-	if input.DelegatedFromTaskID != nil {
-		delegatedFromTaskID := strings.TrimSpace(*input.DelegatedFromTaskID)
-		input.DelegatedFromTaskID = &delegatedFromTaskID
+	if input.DelegatedFromTaskID.Value != nil {
+		delegatedFromTaskID := strings.TrimSpace(*input.DelegatedFromTaskID.Value)
+		input.DelegatedFromTaskID.Value = &delegatedFromTaskID
 	}
 }
 
 func validateCreateTask(input models.CreateTask, creatorID string) map[string]string {
 	details := map[string]string{}
-	if input.AssignedToID == "" {
+	switch input.AssignedToID {
+	case "":
 		details["assigned_to_id"] = "assigned_to_id is required"
-	} else if input.AssignedToID == creatorID {
+	case creatorID:
 		details["assigned_to_id"] = "assigned_to_id cannot be the creator"
 	}
 	if input.Title == "" {
@@ -264,17 +278,19 @@ func validateCreateTask(input models.CreateTask, creatorID string) map[string]st
 func validateUpdateTask(input models.UpdateTask, creatorID string) map[string]string {
 	details := map[string]string{}
 	if input.AssignedToID != nil {
-		if *input.AssignedToID == "" {
+		switch *input.AssignedToID {
+		case "":
 			details["assigned_to_id"] = "assigned_to_id cannot be empty"
-		} else if *input.AssignedToID == creatorID {
+		case creatorID:
 			details["assigned_to_id"] = "assigned_to_id cannot be the creator"
 		}
 	}
 	if input.Title != nil && *input.Title == "" {
 		details["title"] = "title cannot be empty"
 	}
-	if input.DelegatedFromTaskID != nil && *input.DelegatedFromTaskID == "" {
-		details["delegated_from_task_id"] = "delegated_from_task_id cannot be empty"
+	// Explicit null clears the field; an empty string is rejected.
+	if input.DelegatedFromTaskID.Value != nil && *input.DelegatedFromTaskID.Value == "" {
+		details["delegated_from_task_id"] = "delegated_from_task_id cannot be empty (use null to clear)"
 	}
 	return details
 }
@@ -283,7 +299,7 @@ func expectationItems(tasks []models.Task) []models.TaskListItem {
 	items := make([]models.TaskListItem, 0, len(tasks))
 	for _, task := range tasks {
 		item := taskListItem(task)
-		item.AssignedBy = task.CreatedBy
+		item.AssignedTo = task.AssignedTo
 		items = append(items, item)
 	}
 	return items
@@ -293,7 +309,7 @@ func todoItems(tasks []models.Task) []models.TaskListItem {
 	items := make([]models.TaskListItem, 0, len(tasks))
 	for _, task := range tasks {
 		item := taskListItem(task)
-		item.AssignedTo = task.AssignedTo
+		item.AssignedBy = task.CreatedBy
 		items = append(items, item)
 	}
 	return items

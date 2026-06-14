@@ -1,4 +1,4 @@
-// Package sqldb provides database operations for the IAM service.
+// Package sqldb provides database operations for the relays service.
 package sqldb
 
 import (
@@ -7,12 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"strconv"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
-	_ "github.com/joho/godotenv/autoload"
+	"github.com/nourabuild/relays-api/internal/sdk/config"
 	"github.com/nourabuild/relays-api/internal/sdk/models"
 )
 
@@ -20,7 +19,6 @@ import (
 // https://github.com/lib/pq/blob/master/error.go#L178
 const (
 	uniqueViolation     = "23505"
-	undefinedTable      = "42P01"
 	foreignKeyViolation = "23503"
 	checkViolation      = "23514"
 	notNullViolation    = "23502"
@@ -29,11 +27,9 @@ const (
 var (
 	ErrDBNotFound          = sql.ErrNoRows
 	ErrDBDuplicatedEntry   = errors.New("duplicated entry")
-	ErrUndefinedTable      = errors.New("undefined table")
 	ErrForeignKeyViolation = errors.New("foreign key violation")
 	ErrCheckViolation      = errors.New("check constraint violation")
 	ErrNotNullViolation    = errors.New("not null violation")
-	ErrTransactionFailed   = errors.New("transaction failed")
 )
 
 // Service represents a service that interacts with a database.
@@ -54,19 +50,6 @@ type Service interface {
 	ListUsers(ctx context.Context) ([]models.User, error)
 	SearchUsers(ctx context.Context, query string) ([]models.User, error)
 
-	// Refresh token operations
-	CreateRefreshToken(ctx context.Context, token models.NewRefreshToken) (models.RefreshToken, error)
-	GetRefreshTokenByToken(ctx context.Context, token []byte) (models.RefreshToken, error)
-	RevokeRefreshToken(ctx context.Context, tokenID string) error
-	DeleteExpiredRefreshTokens(ctx context.Context) error
-	DeleteRefreshTokensByUserID(ctx context.Context, userID string) error
-
-	// Password reset token operations
-	CreatePasswordResetToken(ctx context.Context, token models.NewPasswordResetToken) (models.PasswordResetToken, error)
-	GetPasswordResetToken(ctx context.Context, token string) (models.PasswordResetToken, error)
-	MarkPasswordResetTokenAsUsed(ctx context.Context, tokenID string) error
-	DeleteExpiredPasswordResetTokens(ctx context.Context) error
-
 	// Task operations
 	ListExpectations(ctx context.Context, userID string) ([]models.Task, error)
 	ListTodos(ctx context.Context, userID string) ([]models.Task, error)
@@ -79,33 +62,27 @@ type Service interface {
 }
 
 type service struct {
-	db *sql.DB
+	db       *sql.DB
+	database string
 }
 
-var (
-	database   = os.Getenv("BLUEPRINT_DB_DATABASE")
-	password   = os.Getenv("BLUEPRINT_DB_PASSWORD")
-	username   = os.Getenv("BLUEPRINT_DB_USERNAME")
-	port       = os.Getenv("BLUEPRINT_DB_PORT")
-	host       = os.Getenv("BLUEPRINT_DB_HOST")
-	schema     = os.Getenv("BLUEPRINT_DB_SCHEMA")
-	dbInstance *service
-)
-
-func New() Service {
-	// Reuse Connection
-	if dbInstance != nil {
-		return dbInstance
-	}
-	connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=disable&search_path=%s", username, password, host, port, database, schema)
+func New(cfg config.DB) (Service, error) {
+	connStr := fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s&search_path=%s",
+		cfg.Username, cfg.Password, cfg.Host, cfg.Port, cfg.Database, cfg.SSLMode, cfg.Schema)
 	db, err := sql.Open("pgx", connStr)
 	if err != nil {
-		log.Fatal(err)
+		return nil, fmt.Errorf("opening database: %w", err)
 	}
-	dbInstance = &service{
-		db: db,
-	}
-	return dbInstance
+
+	// Bound the pool: the driver default is unlimited open connections.
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(25)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
+	return &service{
+		db:       db,
+		database: cfg.Database,
+	}, nil
 }
 
 // Health checks the health of the database connection by pinging the database.
@@ -168,7 +145,7 @@ func (s *service) Health() map[string]string {
 // If the connection is successfully closed, it returns nil.
 // If an error occurs while closing the connection, it returns the error.
 func (s *service) Close() error {
-	log.Printf("Disconnected from database: %s", database)
+	log.Printf("Disconnected from database: %s", s.database)
 	return s.db.Close()
 }
 
@@ -289,7 +266,6 @@ func (s *service) CreateUser(ctx context.Context, newUser models.NewUser) (model
 		if isPgError(err, uniqueViolation) {
 			return models.User{}, ErrDBDuplicatedEntry
 		}
-		log.Printf("DEBUG CreateUser error: %v", err)
 		return models.User{}, fmt.Errorf("creating user: %w", err)
 	}
 
@@ -383,230 +359,6 @@ func (s *service) SearchUsers(ctx context.Context, query string) ([]models.User,
 }
 
 // ---------------------------------------------
-// Refresh Token Operations
-// ---------------------------------------------
-
-// CreateRefreshToken inserts a new refresh token into the database.
-func (s *service) CreateRefreshToken(ctx context.Context, newRefreshToken models.NewRefreshToken) (models.RefreshToken, error) {
-	const query = `
-		INSERT INTO todos.refresh_tokens (user_id, token, expires_at)
-		VALUES ($1, $2, $3)
-		RETURNING id::text, user_id::text, token, expires_at, revoked_at, created_at, updated_at
-	`
-
-	refreshToken, err := scanRefreshToken(s.db.QueryRowContext(ctx, query,
-		newRefreshToken.UserID,
-		newRefreshToken.Token,
-		newRefreshToken.ExpiresAt,
-	))
-
-	if err != nil {
-		if isPgError(err, foreignKeyViolation) {
-			return models.RefreshToken{}, ErrForeignKeyViolation
-		}
-		return models.RefreshToken{}, fmt.Errorf("creating refresh token: %w", err)
-	}
-
-	return refreshToken, nil
-}
-
-// GetRefreshTokenByToken retrieves a refresh token by its token value.
-func (s *service) GetRefreshTokenByToken(ctx context.Context, token []byte) (models.RefreshToken, error) {
-	const query = `
-		SELECT
-			id::text,
-			user_id::text,
-			token,
-			expires_at,
-			revoked_at,
-			created_at,
-			updated_at
-		FROM todos.refresh_tokens
-		WHERE token = $1
-	`
-
-	refreshToken, err := scanRefreshToken(s.db.QueryRowContext(ctx, query, token))
-
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return models.RefreshToken{}, ErrDBNotFound
-		}
-		return models.RefreshToken{}, fmt.Errorf("getting refresh token: %w", err)
-	}
-
-	return refreshToken, nil
-}
-
-// RevokeRefreshToken marks a refresh token as revoked.
-func (s *service) RevokeRefreshToken(ctx context.Context, tokenID string) error {
-	const query = `
-		UPDATE todos.refresh_tokens
-		SET revoked_at = CURRENT_TIMESTAMP,
-		    updated_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-	`
-
-	result, err := s.db.ExecContext(ctx, query, tokenID)
-	if err != nil {
-		return fmt.Errorf("revoking refresh token: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("checking rows affected: %w", err)
-	}
-
-	if rowsAffected == 0 {
-		return ErrDBNotFound
-	}
-
-	return nil
-}
-
-// DeleteExpiredRefreshTokens removes all expired refresh tokens from the database.
-func (s *service) DeleteExpiredRefreshTokens(ctx context.Context) error {
-	const query = `
-		DELETE FROM todos.refresh_tokens
-		WHERE expires_at < CURRENT_TIMESTAMP
-	`
-
-	_, err := s.db.ExecContext(ctx, query)
-	if err != nil {
-		return fmt.Errorf("deleting expired refresh tokens: %w", err)
-	}
-
-	return nil
-}
-
-// DeleteRefreshTokensByUserID removes all refresh tokens for a specific user.
-func (s *service) DeleteRefreshTokensByUserID(ctx context.Context, userID string) error {
-	const query = `
-		DELETE FROM todos.refresh_tokens
-		WHERE user_id = $1
-	`
-
-	_, err := s.db.ExecContext(ctx, query, userID)
-	if err != nil {
-		return fmt.Errorf("deleting refresh tokens for user: %w", err)
-	}
-
-	return nil
-}
-
-// ---------------------------------------------
-// Password Reset Token Operations
-// ---------------------------------------------
-
-// CreatePasswordResetToken inserts a new password reset token into the database.
-func (s *service) CreatePasswordResetToken(ctx context.Context, newToken models.NewPasswordResetToken) (models.PasswordResetToken, error) {
-	const query = `
-		INSERT INTO todos.password_reset_tokens (user_id, token, expires_at)
-		VALUES ($1, $2, $3)
-		RETURNING id::text, user_id::text, token, expires_at, used_at, created_at
-	`
-
-	var token models.PasswordResetToken
-	err := s.db.QueryRowContext(ctx, query,
-		newToken.UserID,
-		newToken.Token,
-		newToken.ExpiresAt,
-	).Scan(
-		&token.ID,
-		&token.UserID,
-		&token.Token,
-		&token.ExpiresAt,
-		&token.UsedAt,
-		&token.CreatedAt,
-	)
-
-	if err != nil {
-		if isPgError(err, foreignKeyViolation) {
-			return models.PasswordResetToken{}, ErrForeignKeyViolation
-		}
-		return models.PasswordResetToken{}, fmt.Errorf("creating password reset token: %w", err)
-	}
-
-	return token, nil
-}
-
-// GetPasswordResetToken retrieves a password reset token by its token value.
-func (s *service) GetPasswordResetToken(ctx context.Context, token string) (models.PasswordResetToken, error) {
-	const query = `
-		SELECT
-			id::text,
-			user_id::text,
-			token,
-			expires_at,
-			used_at,
-			created_at
-		FROM todos.password_reset_tokens
-		WHERE token = $1
-		AND used_at IS NULL
-		AND expires_at > CURRENT_TIMESTAMP
-	`
-
-	var resetToken models.PasswordResetToken
-	err := s.db.QueryRowContext(ctx, query, token).Scan(
-		&resetToken.ID,
-		&resetToken.UserID,
-		&resetToken.Token,
-		&resetToken.ExpiresAt,
-		&resetToken.UsedAt,
-		&resetToken.CreatedAt,
-	)
-
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return models.PasswordResetToken{}, ErrDBNotFound
-		}
-		return models.PasswordResetToken{}, fmt.Errorf("getting password reset token: %w", err)
-	}
-
-	return resetToken, nil
-}
-
-// MarkPasswordResetTokenAsUsed marks a password reset token as used.
-func (s *service) MarkPasswordResetTokenAsUsed(ctx context.Context, tokenID string) error {
-	const query = `
-		UPDATE todos.password_reset_tokens
-		SET used_at = CURRENT_TIMESTAMP
-		WHERE id = $1
-	`
-
-	result, err := s.db.ExecContext(ctx, query, tokenID)
-	if err != nil {
-		return fmt.Errorf("marking password reset token as used: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("checking rows affected: %w", err)
-	}
-
-	if rowsAffected == 0 {
-		return ErrDBNotFound
-	}
-
-	return nil
-}
-
-// DeleteExpiredPasswordResetTokens removes all expired or used password reset tokens.
-func (s *service) DeleteExpiredPasswordResetTokens(ctx context.Context) error {
-	const query = `
-		DELETE FROM todos.password_reset_tokens
-		WHERE expires_at < CURRENT_TIMESTAMP OR used_at IS NOT NULL
-	`
-
-	_, err := s.db.ExecContext(ctx, query)
-	if err != nil {
-		return fmt.Errorf("deleting expired password reset tokens: %w", err)
-	}
-
-	return nil
-}
-
-// ---------------------------------------------
-// ---------------------------------------------
 // Helpers
 // ---------------------------------------------
 
@@ -644,23 +396,6 @@ func scanUser(scanner rowScanner) (models.User, error) {
 	return user, nil
 }
 
-func scanRefreshToken(scanner rowScanner) (models.RefreshToken, error) {
-	var refreshToken models.RefreshToken
-	if err := scanner.Scan(
-		&refreshToken.ID,
-		&refreshToken.UserID,
-		&refreshToken.Token,
-		&refreshToken.ExpiresAt,
-		&refreshToken.RevokedAt,
-		&refreshToken.CreatedAt,
-		&refreshToken.UpdatedAt,
-	); err != nil {
-		return models.RefreshToken{}, err
-	}
-
-	return refreshToken, nil
-}
-
 // isPgError checks if the error is a PostgreSQL error with the given code.
 func isPgError(err error, code string) bool {
 	var pgErr interface{ SQLState() string }
@@ -676,30 +411,6 @@ func NullString(s *string) sql.NullString {
 		return sql.NullString{}
 	}
 	return sql.NullString{String: *s, Valid: true}
-}
-
-// NullInt64 creates a sql.NullInt64 from an int64 pointer.
-func NullInt64(i *int64) sql.NullInt64 {
-	if i == nil {
-		return sql.NullInt64{}
-	}
-	return sql.NullInt64{Int64: *i, Valid: true}
-}
-
-// NullFloat64 creates a sql.NullFloat64 from a float64 pointer.
-func NullFloat64(f *float64) sql.NullFloat64 {
-	if f == nil {
-		return sql.NullFloat64{}
-	}
-	return sql.NullFloat64{Float64: *f, Valid: true}
-}
-
-// NullBool creates a sql.NullBool from a bool pointer.
-func NullBool(b *bool) sql.NullBool {
-	if b == nil {
-		return sql.NullBool{}
-	}
-	return sql.NullBool{Bool: *b, Valid: true}
 }
 
 // NullTime creates a sql.NullTime from a time.Time pointer.
@@ -727,64 +438,10 @@ func Int32Ptr(ni sql.NullInt32) *int {
 	return &intVal
 }
 
-// Int64Ptr returns a pointer to an int64 from sql.NullInt64.
-func Int64Ptr(ni sql.NullInt64) *int64 {
-	if !ni.Valid {
-		return nil
-	}
-	return &ni.Int64
-}
-
-// Float64Ptr returns a pointer to a float64 from sql.NullFloat64.
-func Float64Ptr(nf sql.NullFloat64) *float64 {
-	if !nf.Valid {
-		return nil
-	}
-	return &nf.Float64
-}
-
-// BoolPtr returns a pointer to a bool from sql.NullBool.
-func BoolPtr(nb sql.NullBool) *bool {
-	if !nb.Valid {
-		return nil
-	}
-	return &nb.Bool
-}
-
 // TimePtr returns a pointer to a time.Time from sql.NullTime.
 func TimePtr(nt sql.NullTime) *time.Time {
 	if !nt.Valid {
 		return nil
 	}
 	return &nt.Time
-}
-
-// IsNotFound checks if the error is a not found error.
-func IsNotFound(err error) bool {
-	return errors.Is(err, ErrDBNotFound)
-}
-
-// IsDuplicateEntry checks if the error is a duplicate entry error.
-func IsDuplicateEntry(err error) bool {
-	return isPgError(err, uniqueViolation)
-}
-
-// IsForeignKeyViolation checks if the error is a foreign key violation error.
-func IsForeignKeyViolation(err error) bool {
-	return isPgError(err, foreignKeyViolation)
-}
-
-// IsUndefinedTable checks if the error is an undefined table error.
-func IsUndefinedTable(err error) bool {
-	return isPgError(err, undefinedTable)
-}
-
-// IsCheckViolation checks if the error is a check constraint violation error.
-func IsCheckViolation(err error) bool {
-	return isPgError(err, checkViolation)
-}
-
-// IsNotNullViolation checks if the error is a not null violation error.
-func IsNotNullViolation(err error) bool {
-	return isPgError(err, notNullViolation)
 }

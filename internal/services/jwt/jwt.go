@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -30,36 +28,13 @@ type TokenService struct {
 	issuer    string
 }
 
-func NewTokenService() *TokenService {
-	issuer := envOrDefault("JWT_ISSUER", "your-app-name")
-	secret := envOrDefault("JWT_ACCESS_TOKEN_SECRET", "your-access-token-secret")
-
+// NewTokenService verifies tokens signed by the auth service. The secret and
+// issuer are validated by config.Load before they reach this constructor.
+func NewTokenService(secret, issuer string) *TokenService {
 	return &TokenService{
 		secretKey: []byte(secret),
 		issuer:    issuer,
 	}
-}
-
-func envOrDefault(key, fallback string) string {
-	if value := normalizeEnvValue(os.Getenv(key)); value != "" {
-		return value
-	}
-	return fallback
-}
-
-func normalizeEnvValue(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) < 2 {
-		return value
-	}
-
-	first := value[0]
-	last := value[len(value)-1]
-	if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
-		return value[1 : len(value)-1]
-	}
-
-	return value
 }
 
 func (s *TokenService) ParseAccessToken(ctx context.Context, tokenString string) (*Claims, error) {
