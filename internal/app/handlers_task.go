@@ -260,9 +260,10 @@ func normalizeUpdateTaskInput(input *models.UpdateTask) {
 
 func validateCreateTask(input models.CreateTask, creatorID string) map[string]string {
 	details := map[string]string{}
-	if input.AssignedToID == "" {
+	switch input.AssignedToID {
+	case "":
 		details["assigned_to_id"] = "assigned_to_id is required"
-	} else if input.AssignedToID == creatorID {
+	case creatorID:
 		details["assigned_to_id"] = "assigned_to_id cannot be the creator"
 	}
 	if input.Title == "" {
@@ -277,9 +278,10 @@ func validateCreateTask(input models.CreateTask, creatorID string) map[string]st
 func validateUpdateTask(input models.UpdateTask, creatorID string) map[string]string {
 	details := map[string]string{}
 	if input.AssignedToID != nil {
-		if *input.AssignedToID == "" {
+		switch *input.AssignedToID {
+		case "":
 			details["assigned_to_id"] = "assigned_to_id cannot be empty"
-		} else if *input.AssignedToID == creatorID {
+		case creatorID:
 			details["assigned_to_id"] = "assigned_to_id cannot be the creator"
 		}
 	}
@@ -297,7 +299,7 @@ func expectationItems(tasks []models.Task) []models.TaskListItem {
 	items := make([]models.TaskListItem, 0, len(tasks))
 	for _, task := range tasks {
 		item := taskListItem(task)
-		item.AssignedBy = task.CreatedBy
+		item.AssignedTo = task.AssignedTo
 		items = append(items, item)
 	}
 	return items
@@ -307,7 +309,7 @@ func todoItems(tasks []models.Task) []models.TaskListItem {
 	items := make([]models.TaskListItem, 0, len(tasks))
 	for _, task := range tasks {
 		item := taskListItem(task)
-		item.AssignedTo = task.AssignedTo
+		item.AssignedBy = task.CreatedBy
 		items = append(items, item)
 	}
 	return items

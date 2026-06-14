@@ -59,7 +59,7 @@ func (s *service) ListExpectations(ctx context.Context, userID string) ([]models
 		SELECT ` + taskSelectColumns + `
 		FROM todos.tasks t
 		` + taskJoins + `
-		WHERE t.assigned_to_id = $1
+		WHERE t.created_by_id = $1
 		  AND t.status <> 'cancelled'
 		ORDER BY t.due_at ASC NULLS LAST, t.created_at DESC
 	`
@@ -78,7 +78,7 @@ func (s *service) ListTodos(ctx context.Context, userID string) ([]models.Task, 
 		SELECT ` + taskSelectColumns + `
 		FROM todos.tasks t
 		` + taskJoins + `
-		WHERE t.created_by_id = $1
+		WHERE t.assigned_to_id = $1
 		  AND t.status <> 'cancelled'
 		ORDER BY t.due_at ASC NULLS LAST, t.created_at DESC
 	`

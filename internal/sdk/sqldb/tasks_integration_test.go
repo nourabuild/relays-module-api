@@ -179,30 +179,30 @@ func TestTodosAndExpectationsFilterByRoleAndStatus(t *testing.T) {
 		t.Fatalf("cancelling task: %v", err)
 	}
 
-	// Todos = tasks the creator delegated; cancelled tasks are hidden.
-	todos, err := srv.ListTodos(ctx, creator.ID)
+	// Todos = tasks assigned to the caller; cancelled tasks are hidden.
+	todos, err := srv.ListTodos(ctx, assignee.ID)
 	if err != nil {
 		t.Fatalf("ListTodos: %v", err)
 	}
 	if len(todos) != 1 || todos[0].ID != open.ID {
-		t.Errorf("creator todos = %+v, want only %s", todos, open.ID)
+		t.Errorf("assignee todos = %+v, want only %s", todos, open.ID)
 	}
 
-	// Expectations = tasks assigned to the assignee.
-	expectations, err := srv.ListExpectations(ctx, assignee.ID)
+	// Expectations = tasks the caller delegated to others.
+	expectations, err := srv.ListExpectations(ctx, creator.ID)
 	if err != nil {
 		t.Fatalf("ListExpectations: %v", err)
 	}
 	if len(expectations) != 1 || expectations[0].ID != open.ID {
-		t.Errorf("assignee expectations = %+v, want only %s", expectations, open.ID)
+		t.Errorf("creator expectations = %+v, want only %s", expectations, open.ID)
 	}
 
-	// Roles don't bleed: the creator has no expectations, the assignee no todos.
-	if creatorExpectations, _ := srv.ListExpectations(ctx, creator.ID); len(creatorExpectations) != 0 {
-		t.Errorf("creator expectations = %+v, want none", creatorExpectations)
+	// Roles don't bleed: the creator has no todos, the assignee no expectations.
+	if creatorTodos, _ := srv.ListTodos(ctx, creator.ID); len(creatorTodos) != 0 {
+		t.Errorf("creator todos = %+v, want none", creatorTodos)
 	}
-	if assigneeTodos, _ := srv.ListTodos(ctx, assignee.ID); len(assigneeTodos) != 0 {
-		t.Errorf("assignee todos = %+v, want none", assigneeTodos)
+	if assigneeExpectations, _ := srv.ListExpectations(ctx, assignee.ID); len(assigneeExpectations) != 0 {
+		t.Errorf("assignee expectations = %+v, want none", assigneeExpectations)
 	}
 }
 

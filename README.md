@@ -13,8 +13,8 @@ its own database on first request.
 
 The two task lists are named from the caller's point of view:
 
-- `GET /api/v1/task/todos` — tasks **you created** and delegated to others
-- `GET /api/v1/task/expectations` — tasks **assigned to you**
+- `GET /api/v1/task/todos` — tasks **assigned to you**
+- `GET /api/v1/task/expectations` — tasks **you created** and delegated to others
 
 ## Status lifecycle
 
